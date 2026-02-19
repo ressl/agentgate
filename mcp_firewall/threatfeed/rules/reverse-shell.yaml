@@ -1,0 +1,9 @@
+id: TF-005
+name: Reverse Shell
+severity: critical
+description: Tool attempts to execute a reverse shell command
+tags: [execution, reverse-shell]
+match:
+  arguments:
+    command: "*bash -i*|*/dev/tcp/*|*nc -e*|*ncat*|*mkfifo*|*python -c*import socket*|*perl -e*socket*"
+action: deny

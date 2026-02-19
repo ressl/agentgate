@@ -1,0 +1,84 @@
+# Enterprise lockdown policy — maximum security for regulated environments
+version: 1
+defaultAction: deny   # Deny everything not explicitly allowed
+
+globalRateLimit:
+  maxCalls: 100
+  windowSeconds: 60
+
+security:
+  injectionDetection:
+    enabled: true
+    sensitivity: high
+  egressControl:
+    enabled: true
+    blockPrivateIPs: true
+    blockCloudMetadata: true
+
+responseScanning:
+  detectSecrets: true
+  detectPII: true
+
+audit:
+  enabled: true
+  sign: true   # Ed25519 signed audit trail
+  path: /var/log/mcp-firewall/audit.jsonl
+
+agents:
+  claude-desktop:
+    allow: [read_file, search, list_directory]
+    deny: [exec, shell, bash, run_command, write_file, delete, rm]
+    rate_limit: "50/min"
+
+  cursor:
+    allow: [read_file, write_file, search, list_directory]
+    deny: [exec, shell, bash, http_post, fetch_url]
+    rate_limit: "100/min"
+    require_approval: [write_file]
+
+rules:
+  # Block all credential access
+  - name: block-credentials
+    tool: "*"
+    match:
+      arguments:
+        path: "**/.ssh/**"
+    action: deny
+
+  - name: block-env
+    tool: "*"
+    match:
+      arguments:
+        path: "**/.env*"
+    action: deny
+
+  - name: block-aws
+    tool: "*"
+    match:
+      arguments:
+        path: "**/.aws/**"
+    action: deny
+
+  - name: block-kube
+    tool: "*"
+    match:
+      arguments:
+        path: "**/.kube/**"
+    action: deny
+
+  # Block all shell execution
+  - name: block-shell
+    tool: "shell_exec|run_command|execute_command|bash|sh|exec"
+    action: deny
+    message: "Shell execution is not permitted in this environment"
+
+  # Block all external network access
+  - name: block-external
+    tool: "fetch|http_*|curl|wget|send_request"
+    action: deny
+    message: "External network access is not permitted"
+
+  # Allow only safe reads within project directory
+  - name: allow-project-reads
+    tool: "read_file|list_directory|search"
+    action: allow

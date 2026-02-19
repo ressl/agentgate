@@ -1,0 +1,9 @@
+id: TF-003
+name: Credential Harvesting
+severity: critical
+description: Tool attempts to read common credential files
+tags: [credentials, harvesting]
+match:
+  arguments:
+    path: "*.ssh/id_*|*.ssh/authorized_keys|*.aws/credentials|*.env|*.netrc|*.pgpass|*shadow|*htpasswd"
+action: deny

@@ -1,0 +1,9 @@
+id: TF-001
+name: Webhook Exfiltration
+severity: high
+description: Tool sends data to common webhook/paste services used for exfiltration
+tags: [exfiltration, webhook]
+match:
+  arguments:
+    url: "*webhook.site*|*requestbin*|*pipedream*|*ngrok*|*pastebin*|*paste.ee*|*hastebin*"
+action: deny

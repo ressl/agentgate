@@ -1,0 +1,9 @@
+id: TF-002
+name: DNS Tunneling
+severity: critical
+description: Tool arguments contain DNS tunneling patterns (data encoded in DNS queries)
+tags: [exfiltration, dns]
+match:
+  arguments:
+    command: "*nslookup*|*dig*|*host*.*burpcollaborator*|*dnslog*|*ceye.io*|*oastify*"
+action: deny

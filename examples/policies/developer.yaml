@@ -1,0 +1,43 @@
+# Developer-friendly policy — balanced security for daily use
+version: 1
+defaultAction: allow
+
+globalRateLimit:
+  maxCalls: 500
+  windowSeconds: 60
+
+security:
+  injectionDetection:
+    enabled: true
+    sensitivity: medium
+  egressControl:
+    enabled: true
+    blockPrivateIPs: false   # Allow local dev servers
+    blockCloudMetadata: true
+
+responseScanning:
+  detectSecrets: true
+  detectPII: false
+
+rules:
+  - name: block-credentials
+    tool: "*"
+    match:
+      arguments:
+        path: "**/.ssh/**"
+    action: deny
+
+  - name: block-env
+    tool: "*"
+    match:
+      arguments:
+        path: "**/.env*"
+    action: deny
+
+  - name: approve-shell
+    tool: "shell_exec|run_command|execute_command|bash"
+    action: prompt
+
+  - name: approve-delete
+    tool: "*delete*|*remove*|*rm*"
+    action: prompt
