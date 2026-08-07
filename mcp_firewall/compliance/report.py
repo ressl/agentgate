@@ -3,20 +3,26 @@
 from __future__ import annotations
 
 import json
-from collections import Counter, defaultdict
+from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from ..models import Action, Severity
+from ..pipeline.inbound.injection import PATTERNS_HIGH
+from ..pipeline.outbound.pii import PII_PATTERNS
+from ..pipeline.outbound.secrets import SECRET_PATTERNS
 
 
 class AuditData:
-    """Parsed audit log data for report generation."""
+    """Parsed audit log data for report generation.
+
+    The log is streamed line by line; only aggregate counters (plus the
+    bounded list of critical/high severity events) are kept in memory, so
+    large audit logs do not exhaust RAM.
+    """
 
     def __init__(self, audit_path: str | Path) -> None:
         self.path = Path(audit_path)
-        self.events: list[dict[str, Any]] = []
         self.total = 0
         self.denied = 0
         self.allowed = 0
@@ -25,6 +31,8 @@ class AuditData:
         self.by_stage: Counter = Counter()
         self.by_tool: Counter = Counter()
         self.by_agent: Counter = Counter()
+        self.by_agent_denied: Counter = Counter()
+        self.has_signatures = False
         self.critical_events: list[dict[str, Any]] = []
         self.first_timestamp: float | None = None
         self.last_timestamp: float | None = None
@@ -43,7 +51,6 @@ class AuditData:
                 except json.JSONDecodeError:
                     continue
 
-                self.events.append(event)
                 self.total += 1
 
                 action = event.get("decision", "allow")
@@ -54,11 +61,19 @@ class AuditData:
                 else:
                     self.allowed += 1
 
+                agent = event.get("agent_id", "unknown")
+                if action == "deny":
+                    self.by_agent_denied[agent] += 1
+
+                if event.get("signature"):
+                    self.has_signatures = True
+
                 severity = event.get("severity", "info")
                 self.by_severity[severity] += 1
-                self.by_stage[event.get("stage", "none")] += 1
+                # stage is null (not missing) for allowed calls -> "none"
+                self.by_stage[event.get("stage") or "none"] += 1
                 self.by_tool[event.get("tool_name", "unknown")] += 1
-                self.by_agent[event.get("agent_id", "unknown")] += 1
+                self.by_agent[agent] += 1
 
                 if severity in ("critical", "high"):
                     self.critical_events.append(event)
@@ -128,12 +143,12 @@ Automated detection across {len(data.by_stage)} security categories:
 ### 2.1 Audit Trail Properties
 - **Format:** Append-only JSON Lines with SHA-256 hash chain
 - **Integrity:** Each entry references the hash of the previous entry
-- **Signing:** {"Ed25519 digital signatures enabled" if any(e.get("signature") for e in data.events[:10]) else "Available (not enabled)"}
+- **Signing:** {"Ed25519 digital signatures enabled" if data.has_signatures else "Available (not enabled)"}
 - **Tamper Detection:** Hash chain verification via `mcp-firewall audit verify`
 
 ### 2.2 Event Coverage
 All MCP tool calls are logged with:
-- Timestamp (ISO 8601)
+- Timestamp (Unix epoch seconds)
 - Agent identity
 - Tool name and arguments hash (privacy-preserving)
 - Security decision (allow/deny/redact)
@@ -146,19 +161,14 @@ All MCP tool calls are logged with:
 | Agent | Calls | Denied |
 |---|---|---|
 """
-    agent_denied: Counter = Counter()
-    for e in data.events:
-        if e.get("decision") == "deny":
-            agent_denied[e.get("agent_id", "unknown")] += 1
-
     for agent, count in data.by_agent.most_common(10):
-        denied = agent_denied.get(agent, 0)
+        denied = data.by_agent_denied.get(agent, 0)
         report += f"| {agent} | {count:,} | {denied:,} |\n"
 
     report += f"""
 ## 3. Recommendations
 
-1. {"⚠️ Enable Ed25519 audit signing for cryptographic integrity" if not any(e.get("signature") for e in data.events[:10]) else "✅ Ed25519 audit signing is enabled"}
+1. {"⚠️ Enable Ed25519 audit signing for cryptographic integrity" if not data.has_signatures else "✅ Ed25519 audit signing is enabled"}
 2. {"⚠️ Review " + str(len(data.critical_events)) + " critical events" if data.critical_events else "✅ No critical events in audit period"}
 3. Regularly verify audit chain integrity: `mcp-firewall audit verify`
 4. Export audit logs to SIEM for centralized monitoring
@@ -194,13 +204,8 @@ Role-based access control (RBAC) enforced per AI agent identity:
 | Agent | Total Calls | Denied | Denial Rate |
 |---|---|---|---|
 """
-    agent_denied: Counter = Counter()
-    for e in data.events:
-        if e.get("decision") == "deny":
-            agent_denied[e.get("agent_id", "unknown")] += 1
-
     for agent, count in data.by_agent.most_common(10):
-        denied = agent_denied.get(agent, 0)
+        denied = data.by_agent_denied.get(agent, 0)
         rate = denied / max(count, 1) * 100
         report += f"| {agent} | {count:,} | {denied:,} | {rate:.1f}% |\n"
 
@@ -277,7 +282,8 @@ Kill switch mechanism provides emergency access revocation:
 ## CC7: System Operations
 
 ### CC7.1 — Detection of Threats
-Automated threat detection across 8 security stages:
+Automated threat detection across the security pipeline stages observed in the
+audit period:
 
 | Detection Stage | Events |
 |---|---|
@@ -302,15 +308,15 @@ Automated threat detection across 8 security stages:
 Security pipeline evaluates each tool call through:
 1. Kill Switch (emergency deny-all)
 2. Rate Limiter (abuse prevention)
-3. Injection Detector (50+ patterns)
+3. Injection Detector (up to {len(PATTERNS_HIGH)} patterns, sensitivity-dependent)
 4. Egress Control (SSRF/private IP blocking)
 5. Policy Engine (YAML rules + agent RBAC)
 6. Chain Detector (dangerous tool sequences)
 7. Human Approval (interactive prompt)
 
 Plus outbound scanning:
-8. Secret Scanner (18 patterns)
-9. PII Detector (7 patterns)
+8. Secret Scanner ({len(SECRET_PATTERNS)} patterns)
+9. PII Detector ({len(PII_PATTERNS)} patterns)
 
 ## CC8: Change Management
 

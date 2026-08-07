@@ -65,11 +65,17 @@ class CheckResult:
 
 @dataclass
 class ScanResult:
-    """Result of a response scan."""
+    """Result of a response scan.
+
+    ``blocked`` is True when a scanning stage denied the content (e.g.
+    ``secrets.action: deny``); in that case ``content`` is empty so the
+    blocked payload (including any secret) is never handed back to the caller.
+    """
 
     content: str
     modified: bool
     findings: list[dict[str, str]]
+    blocked: bool = False
 
 
 class Gateway:
@@ -150,7 +156,8 @@ class Gateway:
             agent: Agent identifier
 
         Returns:
-            ScanResult with cleaned content and findings
+            ScanResult with cleaned content and findings. When a stage denies
+            the content, ``blocked`` is True and ``content`` is empty.
         """
         request = ToolCallRequest(tool_name=tool_name, agent_id=agent)
         response = ToolCallResponse(
@@ -161,7 +168,11 @@ class Gateway:
         scanned_response, decisions = self._pipeline.scan_outbound(request, response)
 
         modified = any(d.action == Action.REDACT for d in decisions)
-        cleaned_text = scanned_response.content[0].get("text", content) if scanned_response.content else content
+        blocked = any(d.action == Action.DENY for d in decisions)
+        if blocked:
+            cleaned_text = ""
+        else:
+            cleaned_text = scanned_response.content[0].get("text", content) if scanned_response.content else content
 
         findings = [
             {
@@ -177,6 +188,7 @@ class Gateway:
             content=cleaned_text,
             modified=modified,
             findings=findings,
+            blocked=blocked,
         )
 
     def reload(self, config_path: str | Path | None = None) -> None:

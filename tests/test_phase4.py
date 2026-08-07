@@ -65,29 +65,25 @@ class TestAuditSigner:
 # --- Signed Audit Logger ---
 
 class TestSignedAuditLogger:
-    def test_signed_entries(self, tmp_path):
+    def test_signed_entries(self, tmp_path, monkeypatch):
         config = GatewayConfig()
         config.audit.path = str(tmp_path / "signed.audit.jsonl")
         config.audit.sign = True
 
-        # Need key in cwd for signer
-        import os
-        old_cwd = os.getcwd()
-        os.chdir(tmp_path)
-        try:
-            logger = AuditLogger(config)
-            logger.log(make_request(), None)
-            logger.log(make_request(), None)
+        # Default signing key lives under the user config dir; point it at tmp_path
+        monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
 
-            # Read back and verify signatures exist
-            lines = Path(config.audit.path).read_text().splitlines()
-            assert len(lines) == 2
-            for line in lines:
-                entry = json.loads(line)
-                assert "signature" in entry
-                assert len(entry["signature"]) > 0
-        finally:
-            os.chdir(old_cwd)
+        logger = AuditLogger(config)
+        logger.log(make_request(), None)
+        logger.log(make_request(), None)
+
+        # Read back and verify signatures exist
+        lines = Path(config.audit.path).read_text().splitlines()
+        assert len(lines) == 2
+        for line in lines:
+            entry = json.loads(line)
+            assert "signature" in entry
+            assert len(entry["signature"]) > 0
 
 
 # --- Compliance Reports ---

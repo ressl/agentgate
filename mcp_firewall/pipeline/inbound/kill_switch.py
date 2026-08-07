@@ -30,11 +30,13 @@ class KillSwitch(InboundStage):
 
     def __init__(self) -> None:
         self.activated = False
-        # Register SIGUSR1 handler (Unix only)
+        # Register SIGUSR1 handler (Unix only, main thread only). Don't
+        # clobber a pre-existing handler installed by the host application.
         try:
-            signal.signal(signal.SIGUSR1, self._signal_handler)
-        except (OSError, AttributeError):
-            pass  # Windows or restricted environment
+            if signal.getsignal(signal.SIGUSR1) == signal.SIG_DFL:
+                signal.signal(signal.SIGUSR1, self._signal_handler)
+        except (OSError, AttributeError, ValueError):
+            pass  # Windows, restricted environment, or not the main thread
 
     def _signal_handler(self, signum: int, frame: object) -> None:
         self.activated = not self.activated  # Toggle

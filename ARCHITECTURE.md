@@ -22,7 +22,7 @@ AI agents are the new attack surface. MCP is the protocol. The problem:
 |---|---|---|---|---|
 | MCP-native proxy | ✅ | ❌ | ✅ (SaaS) | ✅ |
 | Open source | ✅ | ✅ | ❌ | ✅ |
-| Policy-as-Code | YAML | Python | ❌ | **OPA/Rego + YAML** |
+| Policy-as-Code | YAML | Python | ❌ | **YAML** |
 | Compliance reports | ❌ | ❌ | SOC2 | **DORA, FINMA, SOC2** |
 | Immutable audit trail | ❌ | ❌ | ✅ | **✅ (signed, tamper-proof)** |
 | Threat intelligence | Basic regex | ML models | ❌ | **YARA-like rules + community feed** |
@@ -36,7 +36,7 @@ AI agents are the new attack surface. MCP is the protocol. The problem:
 ### Our differentiation
 
 1. **Compliance-first**: DORA/FINMA/SOC2 report generation out of the box
-2. **OPA/Rego policies**: Industry-standard policy language, not custom YAML
+2. **YAML Policy-as-Code**: Versionable, reviewable policies — no code changes needed
 3. **Signed audit trail**: Cryptographically signed, tamper-proof event log
 4. **Threat feed**: Community-maintained rules (like Sigma for SIEM, YARA for malware)
 5. **Agent identity**: RBAC per agent — "Claude can read files, GPT cannot exec shell"
@@ -51,7 +51,7 @@ AI agents are the new attack surface. MCP is the protocol. The problem:
 │   Cursor,   │     │  ┌──────────┐  ┌──────────┐  ┌───────────┐ │     │              │
 │   VSCode)   │     │  │ Inbound  │  │  Policy   │  │ Outbound  │ │     └──────────────┘
 │             │     │  │ Pipeline │─►│  Engine   │─►│ Pipeline  │ │
-└─────────────┘     │  └──────────┘  │ (OPA/Rego)│  └───────────┘ │
+└─────────────┘     │  └──────────┘  │   (YAML)  │  └───────────┘ │
                     │                └──────────┘                  │
                     │       │              │             │          │
                     │       ▼              ▼             ▼          │
@@ -74,24 +74,27 @@ AI agents are the new attack surface. MCP is the protocol. The problem:
 ## Core Components
 
 ### 1. MCP Proxy (`mcp-firewall/proxy/`)
-- Transparent stdio and SSE/Streamable HTTP proxy
+- Transparent stdio proxy (SSE/Streamable HTTP planned)
 - Zero-config wrapping of any MCP server
-- Agent identity extraction (from client metadata or config)
-- Connection pooling for SSE backends
+- Agent identity extraction from the `initialize` handshake (`clientInfo.name`)
 
 ### 2. Inbound Pipeline (`mcp-firewall/pipeline/inbound/`)
 Sequential checks on every `tools/call` request:
 
 | Stage | Check | Action |
 |---|---|---|
-| 1 | **Kill Switch** | Emergency deny-all (file trigger, signal, API) |
-| 2 | **Agent Identity** | Identify calling agent, apply RBAC |
-| 3 | **Rate Limiter** | Per-agent, per-tool, global limits |
-| 4 | **Injection Detector** | 50+ patterns (prompt injection, Unicode, HTML) |
-| 5 | **Egress Control** | Block private IPs, cloud metadata, SSRF |
-| 6 | **Policy Engine** | Evaluate OPA/Rego policies |
+| 1 | **Kill Switch** | Emergency deny-all (file trigger, signal) |
+| 2 | **Rate Limiter** | Per-agent, per-tool, global limits |
+| 3 | **Injection Detector** | Prompt injection patterns (sensitivity: low/medium/high) |
+| 4 | **Egress Control** | Block private IPs, cloud metadata, SSRF |
+| 5 | **Threat Feed** | Known attack patterns (built-in community rules) |
+| 6 | **Policy Engine** | YAML rules + per-agent RBAC (agent identity from the initialize handshake) |
 | 7 | **Chain Detector** | Detect dangerous tool sequences |
-| 8 | **Human Approval** | Optional: prompt user before execution |
+
+When a stage returns `prompt`, **Human Approval** asks the user in the terminal;
+non-interactive sessions fail closed (deny). The threat feed runs before the
+policy engine so that permissive allow rules cannot override known-malicious
+patterns.
 
 ### 3. Outbound Pipeline (`mcp-firewall/pipeline/outbound/`)
 Scans every tool response:
@@ -100,18 +103,16 @@ Scans every tool response:
 |---|---|---|
 | 1 | **Secret Scanner** | API keys, tokens, private keys, passwords |
 | 2 | **PII Detector** | Email, phone, SSN, credit cards, IBAN |
-| 3 | **Exfil Detector** | Embedded URLs, base64 payloads, DNS tunneling |
-| 4 | **Content Policy** | Custom regex/rules for domain-specific data |
 
-Actions: `pass` | `redact` | `block` | `alert`
+Actions: `pass` | `redact` | `deny` | `alert`
 
-### 4. Policy Engine (`mcp-firewall/policy/`)
-- **OPA/Rego**: Industry-standard, used by Kubernetes, Terraform, etc.
-- **YAML shortcuts**: Simple rules compile to Rego under the hood
+### 4. Policy Engine (`mcp-firewall/pipeline/inbound/policy.py`)
+- **YAML rules**: First-match-wins rules with glob argument matching
+- **Agent RBAC**: Per-agent allow/deny/require_approval lists
 - **Built-in policies**: Sensible defaults that block 90% of attacks
-- **Hot reload**: Policy changes apply without restart
+- **Runtime reload**: SDK callers can reload policies without restart (`Gateway.reload()`)
 
-Example policy (YAML shortcut):
+Example policy:
 ```yaml
 version: 1
 agents:
@@ -138,23 +139,6 @@ rules:
     action: prompt
 ```
 
-Example policy (Rego for advanced users):
-```rego
-package mcp-firewall.policy
-
-default allow = false
-
-allow {
-    input.agent == "claude-desktop"
-    input.tool.name == "read_file"
-    not sensitive_path(input.tool.arguments.path)
-}
-
-sensitive_path(p) { glob.match("**/.ssh/**", ["/"], p) }
-sensitive_path(p) { glob.match("**/.env*", ["/"], p) }
-sensitive_path(p) { glob.match("**/secrets/**", ["/"], p) }
-```
-
 ### 5. Audit Logger (`mcp-firewall/audit/`)
 - Every event logged as signed JSON line (Ed25519)
 - Tamper detection: hash chain (each entry references previous hash)
@@ -171,23 +155,19 @@ Auto-generated reports:
 - **SOC 2 Type II**: Access control and monitoring evidence
 - **ISO 27001 A.12**: Operations security logging
 
-Report format: PDF + machine-readable JSON
+Report format: Markdown (importable into any documentation or GRC system)
 
 ### 7. Dashboard (`mcp-firewall/dashboard/`)
 - Real-time WebSocket event feed
-- Historical analytics (tool usage, block rates, latency)
+- Statistics (tool usage, block rates, latency)
 - Agent activity overview
-- Alert history
-- Policy test playground (dry-run tool calls against policies)
-- Built with: FastAPI + HTMX (no heavy JS framework)
+- Built with: FastAPI + vanilla JS (no heavy JS framework)
 
 ### 8. Alert Engine (`mcp-firewall/alerts/`)
-- Webhook (generic)
-- Slack / Microsoft Teams
-- PagerDuty
-- Syslog / SIEM integration
-- Email (SMTP)
-- Alert rules: severity threshold, rate anomaly, specific patterns
+- Slack (webhook)
+- Generic webhook (with custom headers)
+- Syslog / SIEM integration (CEF)
+- Alert rule: severity threshold (`minSeverity`)
 
 ### 9. Threat Feed (`mcp-firewall/threatfeed/`)
 Community-maintained rule files (like Sigma/YARA):
@@ -203,10 +183,9 @@ match:
 action: deny
 ```
 
-- GitHub-hosted rule repository
-- Auto-update mechanism
+- Built-in rules shipped with the package (`mcp_firewall/threatfeed/rules/`)
+- Custom rules directory via `threatFeed.feedDir`
 - Community contributions via PR
-- Versioned releases
 
 ## File Structure
 
@@ -226,23 +205,17 @@ mcp-firewall/
 │   │   ├── inbound/
 │   │   │   ├── __init__.py
 │   │   │   ├── kill_switch.py
-│   │   │   ├── agent_identity.py
 │   │   │   ├── rate_limiter.py
 │   │   │   ├── injection.py
 │   │   │   ├── egress.py
+│   │   │   ├── threat_feed.py
+│   │   │   ├── policy.py
 │   │   │   ├── chain_detector.py
 │   │   │   └── human_approval.py
 │   │   └── outbound/
 │   │       ├── __init__.py
 │   │       ├── secrets.py
-│   │       ├── pii.py
-│   │       ├── exfil.py
-│   │       └── content.py
-│   ├── policy/
-│   │   ├── __init__.py
-│   │   ├── engine.py            # OPA/Rego evaluation
-│   │   ├── yaml_compiler.py     # YAML → Rego compiler
-│   │   └── builtins.rego        # Default policies
+│   │       └── pii.py
 │   ├── audit/
 │   │   ├── __init__.py
 │   │   ├── logger.py            # Signed JSON line logger
@@ -320,76 +293,74 @@ mcp-firewall wrap -- python my_mcp_server.py
 
 # Initialize config
 mcp-firewall init                    # Generate starter mcp-firewall.yaml
-mcp-firewall init --enterprise       # Generate enterprise policy
+mcp-firewall init --enterprise       # Generate enterprise policy (deny-by-default)
 
-# Policy management
-mcp-firewall policy validate         # Check policy syntax
-mcp-firewall policy test             # Dry-run against test cases
-mcp-firewall policy compile          # Show generated Rego
+# Validate config
+mcp-firewall validate --config mcp-firewall.yaml
 
-# Dashboard
+# Dashboard (runs alongside the proxy)
 mcp-firewall wrap --dashboard -- python server.py
-mcp-firewall dashboard               # Standalone dashboard (reads audit log)
+mcp-firewall wrap --dashboard --dashboard-port 8080 -- python server.py
 
 # Audit
-mcp-firewall audit verify            # Verify hash chain integrity
-mcp-firewall audit export --format csv --output audit.csv
-mcp-firewall audit export --format cef --output siem.log
+mcp-firewall audit                   # Verify hash chain integrity
 
-# Compliance reports
-mcp-firewall report dora --output dora-report.pdf
-mcp-firewall report finma --output finma-report.pdf
-mcp-firewall report soc2 --output soc2-evidence.pdf
+# Compliance reports (Markdown)
+mcp-firewall report dora --output dora-report.md
+mcp-firewall report finma --output finma-report.md
+mcp-firewall report soc2 --output soc2-evidence.md
 
 # Threat feed
-mcp-firewall feed update             # Pull latest rules
-mcp-firewall feed list               # Show active rules
-mcp-firewall feed add ./my-rule.yaml # Add custom rule
+mcp-firewall feed list                       # Show active rules
+mcp-firewall feed list --rules-dir ./my-rules  # Include custom rules
 
 # Scan (integrates mcpwn!)
 mcp-firewall scan -- python server.py    # Pre-deployment security scan
 ```
 
+Planned (not yet implemented): standalone `dashboard` command (reads audit log),
+`audit export` (CSV/CEF), `feed update` / `feed add` (rule distribution),
+SSE/Streamable HTTP transport.
+
 ## Implementation Phases
 
 ### Phase 1: Core Proxy + Basic Pipeline (Week 1)
-- [ ] stdio proxy (transparent pass-through)
-- [ ] Inbound pipeline: kill switch, injection detector, egress control
-- [ ] Outbound pipeline: secret scanner, PII detector
-- [ ] YAML policy engine (simple rules)
-- [ ] JSON audit logger
-- [ ] CLI: `wrap`, `init`
-- [ ] Tests for all pipeline stages
+- [x] stdio proxy (transparent pass-through)
+- [x] Inbound pipeline: kill switch, injection detector, egress control
+- [x] Outbound pipeline: secret scanner, PII detector
+- [x] YAML policy engine (simple rules)
+- [x] JSON audit logger
+- [x] CLI: `wrap`, `init`
+- [x] Tests for all pipeline stages
 
 ### Phase 2: Policy Engine + Agent RBAC (Week 2)
-- [ ] OPA/Rego integration
-- [ ] YAML-to-Rego compiler
-- [ ] Agent identity and RBAC
-- [ ] Rate limiter (per-agent, per-tool, global)
-- [ ] Chain detector
-- [ ] Hot-reload policies
-- [ ] Human approval flow (terminal prompt)
+- [x] YAML policy engine with glob matching (no OPA/Rego — pure YAML rules)
+- [x] Agent identity (from the MCP `initialize` handshake) and RBAC
+- [x] Rate limiter (per-agent, per-tool, global)
+- [x] Chain detector
+- [x] Runtime config reload via SDK (`Gateway.reload()`)
+- [x] Human approval flow (terminal prompt, fail-closed when non-interactive)
 
 ### Phase 3: Dashboard + Alerting (Week 3)
-- [ ] FastAPI + HTMX dashboard
-- [ ] Real-time WebSocket feed
+- [x] FastAPI dashboard (vanilla JS)
+- [x] Real-time WebSocket feed
 - [ ] Historical analytics
-- [ ] Alert engine (webhook, Slack, PagerDuty)
+- [x] Alert engine (Slack, generic webhook, syslog)
 - [ ] SSE transport proxy
 
 ### Phase 4: Compliance + Threat Feed (Week 4)
-- [ ] Signed audit trail (Ed25519 + hash chain)
-- [ ] Compliance report generator (DORA, FINMA, SOC2)
-- [ ] PDF report generation
-- [ ] Threat feed loader + updater
-- [ ] Community rules repository
-- [ ] mcpwn integration (`mcp-firewall scan`)
+- [x] Signed audit trail (Ed25519 + hash chain)
+- [x] Compliance report generator (DORA, FINMA, SOC2)
+- [x] Markdown report generation (PDF planned)
+- [x] Threat feed loader (built-in rules + `threatFeed.feedDir`)
+- [ ] Feed updater + community rules repository
+- [x] mcpwn integration (`mcp-firewall scan`)
 
 ### Phase 5: Polish + Launch
 - [ ] Documentation site
 - [ ] PyPI release
 - [ ] GitHub Actions CI/CD
-- [ ] CONTRIBUTING.md + SECURITY.md
+- [x] CONTRIBUTING.md + SECURITY.md
 - [ ] Demo video / GIF
 - [ ] Launch: Hacker News, Reddit, LinkedIn, Twitter
 
@@ -397,9 +368,8 @@ mcp-firewall scan -- python server.py    # Pre-deployment security scan
 
 - **Python 3.11+** (same ecosystem as LlamaFirewall, security tooling)
 - **Click** (CLI)
-- **FastAPI + HTMX** (Dashboard, no heavy JS)
+- **FastAPI** (Dashboard, no heavy JS)
 - **Pydantic** (Models, config validation)
-- **OPA/Rego** (Policy engine, via `regopy` or subprocess)
 - **Ed25519** (Audit trail signing, via `cryptography`)
 - **Rich** (Terminal output)
 - **pytest + pytest-asyncio** (Testing)

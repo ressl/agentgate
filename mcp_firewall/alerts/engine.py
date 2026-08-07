@@ -89,15 +89,54 @@ class AlertEngine:
             self._history = self._history[-5000:]
 
         # Fire alerts async (best-effort)
+        try:
+            loop: asyncio.AbstractEventLoop | None = asyncio.get_running_loop()
+        except RuntimeError:
+            loop = None
+
         for channel in self.channels:
-            try:
-                asyncio.get_event_loop().create_task(channel.send(event))
-            except RuntimeError:
-                # No event loop, try sync
+            if loop is not None:
+                task = loop.create_task(channel.send(event))
+                task.add_done_callback(self._log_task_failure)
+            else:
+                # No running event loop: send synchronously so the alert is not lost
                 try:
                     asyncio.run(channel.send(event))
                 except Exception as e:
                     logger.warning(f"Alert channel {channel.name} failed: {e}")
+
+    def close(self) -> None:
+        """Close channels that hold resources (e.g. shared HTTP clients).
+
+        Channels recreate their clients lazily, so closing is always safe —
+        even for channels that stay in use afterwards.
+        """
+        try:
+            loop: asyncio.AbstractEventLoop | None = asyncio.get_running_loop()
+        except RuntimeError:
+            loop = None
+
+        for channel in self.channels:
+            close_fn = getattr(channel, "close", None)
+            if close_fn is None:
+                continue
+            try:
+                if loop is not None:
+                    task = loop.create_task(close_fn())
+                    task.add_done_callback(self._log_task_failure)
+                else:
+                    asyncio.run(close_fn())
+            except Exception as e:
+                logger.warning(f"Alert channel {channel.name} close failed: {e}")
+
+    @staticmethod
+    def _log_task_failure(task: asyncio.Task) -> None:
+        """Retrieve and log exceptions from fire-and-forget alert tasks."""
+        if task.cancelled():
+            return
+        exc = task.exception()
+        if exc is not None:
+            logger.warning(f"Alert send task failed: {exc}")
 
     @property
     def history(self) -> list[AlertEvent]:

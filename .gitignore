@@ -17,3 +17,5 @@ htmlcov/
 *.log
 *.audit
 *.audit.sig
+*.audit.jsonl
+mcp-firewall.key

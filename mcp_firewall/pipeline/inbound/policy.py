@@ -119,11 +119,28 @@ def _arguments_match(arguments: dict[str, Any], matchers: dict[str, Any]) -> boo
 
         if isinstance(pattern, str) and isinstance(value, str):
             # Support glob patterns with **
-            glob_pattern = pattern.replace("**", "GLOBSTAR").replace("*", "[^/]*")
-            glob_pattern = glob_pattern.replace("GLOBSTAR", ".*")
-            if not re.match(glob_pattern, value):
+            if not re.match(_glob_to_regex(pattern), value):
                 return False
         elif pattern != value:
             return False
 
     return True
+
+
+def _glob_to_regex(pattern: str) -> str:
+    """Convert a glob pattern to a fully-anchored regex (everything escaped).
+
+    ``*``/``?`` do not cross ``/``, ``**`` (globstar) matches any characters.
+    """
+    segments = []
+    for segment in pattern.split("**"):
+        out = []
+        for char in segment:
+            if char == "*":
+                out.append("[^/]*")
+            elif char == "?":
+                out.append("[^/]")
+            else:
+                out.append(re.escape(char))
+        segments.append("".join(out))
+    return ".*".join(segments) + r"\Z"

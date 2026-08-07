@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import logging.handlers
-import time
 
 from .engine import AlertChannel, AlertEvent
 from ..models import Severity
@@ -17,6 +17,27 @@ CEF_SEVERITY = {
     Severity.LOW: 3,
     Severity.INFO: 1,
 }
+
+
+def _cef_escape_header(value: str) -> str:
+    """Escape a value for a CEF header field (backslash, pipe, '=', CR/LF)."""
+    return (
+        value.replace("\\", "\\\\")
+        .replace("|", "\\|")
+        .replace("=", "\\=")
+        .replace("\r", "\\r")
+        .replace("\n", "\\n")
+    )
+
+
+def _cef_escape_extension(value: str) -> str:
+    """Escape a value for a CEF extension field (backslash, '=', CR/LF)."""
+    return (
+        value.replace("\\", "\\\\")
+        .replace("=", "\\=")
+        .replace("\r", "\\r")
+        .replace("\n", "\\n")
+    )
 
 
 class SyslogChannel(AlertChannel):
@@ -42,11 +63,11 @@ class SyslogChannel(AlertChannel):
 
         # CEF format: CEF:Version|Vendor|Product|Version|SignatureID|Name|Severity|Extensions
         cef = (
-            f"CEF:0|mcp-firewall|mcp-firewall|0.1.0|{stage}|"
-            f"{alert.decision.reason[:200]}|{cef_severity}|"
-            f"act={alert.decision.action.value} "
-            f"src={alert.request.agent_id} "
-            f"cs1={alert.request.tool_name} "
+            f"CEF:0|mcp-firewall|mcp-firewall|0.1.0|{_cef_escape_header(stage)}|"
+            f"{_cef_escape_header(alert.decision.reason[:200])}|{cef_severity}|"
+            f"act={_cef_escape_extension(alert.decision.action.value)} "
+            f"src={_cef_escape_extension(alert.request.agent_id)} "
+            f"cs1={_cef_escape_extension(alert.request.tool_name)} "
             f"cs1Label=ToolName "
             f"rt={int(alert.request.timestamp * 1000)}"
         )
@@ -61,7 +82,7 @@ class SyslogChannel(AlertChannel):
                 args=(),
                 exc_info=None,
             )
-            self.handler.emit(record)
+            await asyncio.to_thread(self.handler.emit, record)
             return True
         except Exception:
             return False

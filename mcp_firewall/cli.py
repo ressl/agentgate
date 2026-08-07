@@ -23,9 +23,12 @@ def main() -> None:
 
 @main.command()
 @click.argument("server_args", nargs=-1, required=True)
-@click.option("--config", "config_path", type=click.Path(), help="Path to mcp-firewall.yaml")
+@click.option("--config", "config_path", type=click.Path(exists=True), help="Path to mcp-firewall.yaml")
 @click.option("--dashboard", is_flag=True, help="Enable real-time dashboard (Phase 3)")
-def wrap(server_args: tuple[str, ...], config_path: str | None, dashboard: bool) -> None:
+@click.option("--dashboard-host", default="127.0.0.1", show_default=True, help="Dashboard bind host")
+@click.option("--dashboard-port", default=9090, show_default=True, type=int, help="Dashboard bind port")
+def wrap(server_args: tuple[str, ...], config_path: str | None, dashboard: bool,
+         dashboard_host: str, dashboard_port: int) -> None:
     """Wrap an MCP server with mcp-firewall protection.
 
     Usage: mcp-firewall wrap -- npx @modelcontextprotocol/server-filesystem /tmp
@@ -50,8 +53,8 @@ def wrap(server_args: tuple[str, ...], config_path: str | None, dashboard: bool)
 
     if dashboard:
         from .dashboard.server import start_dashboard
-        start_dashboard()
-        console.print(f"  [green]Dashboard:[/green] http://127.0.0.1:9090")
+        start_dashboard(host=dashboard_host, port=dashboard_port)
+        console.print(f"  [green]Dashboard:[/green] http://{dashboard_host}:{dashboard_port}")
         console.print()
 
     # Start proxy
@@ -76,10 +79,21 @@ def init(enterprise: bool, output: str) -> None:
         if not click.confirm(f"{output} already exists. Overwrite?"):
             return
 
-    content = generate_default_config()
+    content = generate_enterprise_config() if enterprise else generate_default_config()
     Path(output).write_text(content)
     console.print(f"[green]✓[/green] Generated {output}")
     console.print(f"[dim]  Edit the file, then: mcp-firewall wrap -- <your-mcp-server>[/dim]")
+
+
+def generate_enterprise_config() -> str:
+    """Stricter variant of the default config: deny-by-default, tighter scanning."""
+    return (
+        generate_default_config()
+        .replace("defaultAction: prompt", "defaultAction: deny", 1)
+        .replace("sensitivity: medium", "sensitivity: high", 1)
+        .replace("detectPII: false", "detectPII: true", 1)
+        .replace("maxCalls: 200", "maxCalls: 60", 1)
+    )
 
 
 @main.command()
@@ -109,6 +123,10 @@ def audit(config_path: str | None) -> None:
     from .audit.logger import AuditLogger
     logger = AuditLogger(config)
 
+    if not logger.path.exists():
+        console.print(f"[red]✗[/red] Audit log not found: {logger.path}")
+        sys.exit(1)
+
     is_valid, count, error = logger.verify_chain()
 
     if is_valid:
@@ -136,7 +154,8 @@ def scan(server_args: tuple[str, ...], output_format: str, severity: str) -> Non
     exit_code = run_scan(list(server_args), extra)
     if exit_code < 0:
         Console().print("[yellow]Install mcpwn for scanning: pip install mcpwn[/yellow]")
-    sys.exit(max(exit_code, 0))
+        sys.exit(3)
+    sys.exit(exit_code)
 
 
 @main.group()

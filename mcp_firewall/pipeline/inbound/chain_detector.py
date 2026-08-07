@@ -58,6 +58,9 @@ DANGEROUS_CHAINS: list[tuple[set[str], set[str], str]] = [
 # Time window for chain detection (seconds)
 CHAIN_WINDOW = 300  # 5 minutes
 
+# Hard cap on tracked agents (keys may be attacker-controlled)
+_MAX_AGENTS = 10_000
+
 
 class ChainDetector(InboundStage):
     """Detect dangerous tool call sequences within a time window."""
@@ -73,6 +76,9 @@ class ChainDetector(InboundStage):
         agent_key = request.agent_id
 
         with self._lock:
+            if agent_key not in self._history:
+                self._evict_if_full()
+
             # Clean old entries
             self._history[agent_key] = [
                 (tool, ts) for tool, ts in self._history[agent_key]
@@ -102,6 +108,22 @@ class ChainDetector(InboundStage):
             self._history[agent_key].append((current_tool, now))
 
         return None
+
+    def _evict_if_full(self) -> None:
+        """Keep _history bounded: drop empty entries, then the oldest ones.
+
+        Caller must hold self._lock.
+        """
+        if len(self._history) < _MAX_AGENTS:
+            return
+        for key in [k for k, entries in self._history.items() if not entries]:
+            del self._history[key]
+        while len(self._history) >= _MAX_AGENTS:
+            oldest = min(
+                self._history,
+                key=lambda k: self._history[k][-1][1] if self._history[k] else 0.0,
+            )
+            del self._history[oldest]
 
     def reset(self, agent_id: str | None = None) -> None:
         """Clear chain history."""

@@ -4,14 +4,19 @@ from __future__ import annotations
 
 import asyncio
 import json
+import signal
 import sys
 from typing import Any
 
+from pydantic import ValidationError
 from rich.console import Console
 
 from ..models import Action, GatewayConfig, ToolCallRequest, ToolCallResponse
 from ..pipeline.runner import PipelineRunner
 from ..dashboard.app import state as dashboard_state
+
+# Maximum size of a single newline-delimited JSON-RPC message
+MAX_MESSAGE_SIZE = 10 * 1024 * 1024  # 10 MB
 
 
 class StdioProxy:
@@ -27,9 +32,13 @@ class StdioProxy:
 
     def __init__(self, config: GatewayConfig, console: Console | None = None) -> None:
         self.config = config
-        self.pipeline = PipelineRunner(config)
+        # stdin is the JSON-RPC protocol channel here — interactive approval
+        # prompts are impossible, so approval requests fail closed.
+        self.pipeline = PipelineRunner(config, stdin_available=False)
         self.console = console or Console(stderr=True)
         self._server_proc: asyncio.subprocess.Process | None = None
+        # Agent identity captured from the initialize handshake (clientInfo)
+        self._agent_id = "unknown"
 
     async def run(self, server_command: list[str]) -> int:
         """Start the proxy between stdin/stdout and the server subprocess."""
@@ -63,17 +72,42 @@ class StdioProxy:
                 return_when=asyncio.FIRST_COMPLETED,
             )
 
+            # Surface exceptions from finished tasks instead of swallowing them
+            for task in done:
+                if task.cancelled():
+                    continue
+                exc = task.exception()
+                if exc is not None:
+                    self.console.print(f"[red]Proxy task failed:[/red] {exc!r}")
+
             for task in pending:
                 task.cancel()
+            if pending:
+                await asyncio.gather(*pending, return_exceptions=True)
 
         except asyncio.CancelledError:
             pass
         finally:
             if self._server_proc and self._server_proc.returncode is None:
                 self._server_proc.terminate()
-                await self._server_proc.wait()
+                try:
+                    await asyncio.wait_for(self._server_proc.wait(), timeout=5.0)
+                except asyncio.TimeoutError:
+                    self._server_proc.kill()
+                    await self._server_proc.wait()
 
-        return self._server_proc.returncode or 0
+        return self._exit_code(self._server_proc.returncode)
+
+    @staticmethod
+    def _exit_code(returncode: int | None) -> int:
+        """Map the server return code to a proxy exit code.
+
+        A server terminated by our own SIGTERM during shutdown is a clean
+        exit, not an error (sys.exit(-15) would surface as 241).
+        """
+        if returncode is None or returncode == -signal.SIGTERM:
+            return 0
+        return returncode
 
     async def _proxy_client_to_server(self) -> None:
         """Read from client (our stdin), intercept, forward to server."""
@@ -101,6 +135,12 @@ class StdioProxy:
                     self._server_proc.stdin.write(message + b"\n")
                     await self._server_proc.stdin.drain()
 
+            if len(buffer) > MAX_MESSAGE_SIZE:
+                self.console.print(
+                    "[red]Client message exceeds 10 MB limit, closing connection[/red]"
+                )
+                break
+
     async def _proxy_server_to_client(self) -> None:
         """Read from server stdout, scan responses, forward to client."""
         stdout_writer = sys.stdout.buffer
@@ -123,6 +163,12 @@ class StdioProxy:
                 stdout_writer.write(message + b"\n")
                 stdout_writer.flush()
 
+            if len(buffer) > MAX_MESSAGE_SIZE:
+                self.console.print(
+                    "[red]Server message exceeds 10 MB limit, closing connection[/red]"
+                )
+                break
+
     async def _forward_server_stderr(self) -> None:
         """Forward server stderr to our stderr."""
         while True:
@@ -132,31 +178,73 @@ class StdioProxy:
             sys.stderr.buffer.write(line)
             sys.stderr.buffer.flush()
 
+    def _send_error(self, request_id: Any, code: int, message: str) -> None:
+        """Send a JSON-RPC error response to the client."""
+        error_response = {
+            "jsonrpc": "2.0",
+            "id": request_id,
+            "error": {"code": code, "message": message},
+        }
+        sys.stdout.buffer.write(json.dumps(error_response).encode() + b"\n")
+        sys.stdout.buffer.flush()
+
+    def _capture_agent_identity(self, msg: dict[str, Any]) -> None:
+        """Capture clientInfo.name from the initialize handshake as agent_id."""
+        params = msg.get("params")
+        if not isinstance(params, dict):
+            return
+        client_info = params.get("clientInfo")
+        if not isinstance(client_info, dict):
+            return
+        name = client_info.get("name")
+        if isinstance(name, str) and name:
+            self._agent_id = name
+
     async def _intercept_request(self, raw: bytes) -> bytes | None:
         """Intercept and evaluate a JSON-RPC request.
 
         Returns the (possibly modified) message to forward, or None to drop.
+        Malformed messages are logged and skipped — they must never crash
+        the proxy.
         """
         try:
             msg = json.loads(raw)
         except json.JSONDecodeError:
             return raw  # Not JSON, pass through
 
+        if not isinstance(msg, dict):
+            self.console.print("  [red]✗ INVALID[/red] non-object JSON-RPC message dropped")
+            return None
+
         method = msg.get("method", "")
+
+        # Capture agent identity from the initialize handshake
+        if method == "initialize":
+            self._capture_agent_identity(msg)
 
         # Only intercept tools/call
         if method != "tools/call":
             return raw
 
-        params = msg.get("params", {})
-        request = ToolCallRequest(
-            id=str(msg.get("id", "")),
-            tool_name=params.get("name", ""),
-            arguments=params.get("arguments", {}),
-        )
+        params = msg.get("params")
+        if not isinstance(params, dict):
+            params = {}
 
-        # Run inbound pipeline
-        decision = self.pipeline.evaluate_inbound(request)
+        try:
+            request = ToolCallRequest(
+                id=str(msg.get("id", "")),
+                tool_name=params.get("name", ""),
+                arguments=params.get("arguments", {}),
+                agent_id=self._agent_id,
+            )
+        except ValidationError:
+            self.console.print("  [red]✗ INVALID[/red] malformed tools/call request")
+            if "id" in msg:
+                self._send_error(msg.get("id"), -32602, "Invalid params")
+            return None
+
+        # Run inbound pipeline (approval prompts run off the event loop)
+        decision = await self.pipeline.aevaluate_inbound(request)
 
         if decision and decision.action == Action.DENY:
             self.console.print(
@@ -168,30 +256,17 @@ class StdioProxy:
                 "stage": decision.stage.value if decision.stage else None,
                 "timestamp": request.timestamp,
             })
-            # Return error response directly to client
-            error_response = {
-                "jsonrpc": "2.0",
-                "id": msg.get("id"),
-                "result": {
-                    "content": [
-                        {
-                            "type": "text",
-                            "text": f"[mcp-firewall] Blocked: {decision.reason}",
-                        }
-                    ],
-                    "isError": True,
-                },
-            }
-            sys.stdout.buffer.write(json.dumps(error_response).encode() + b"\n")
-            sys.stdout.buffer.flush()
+            # Return JSON-RPC error directly to client (notifications get none)
+            if "id" in msg:
+                self._send_error(
+                    msg.get("id"), -32000, f"[mcp-firewall] Blocked: {decision.reason}"
+                )
             return None  # Don't forward to server
 
         if decision and decision.action == Action.PROMPT:
             self.console.print(
                 f"  [yellow]? PROMPT[/yellow] {request.tool_name}: {decision.reason}"
             )
-            # In Phase 1, prompt falls through to allow (interactive approval in Phase 2)
-            self.console.print(f"  [dim]  (auto-allowing, interactive approval coming in Phase 2)[/dim]")
 
         self.console.print(
             f"  [green]✓ ALLOW[/green]  {request.tool_name}"
@@ -210,9 +285,12 @@ class StdioProxy:
         except json.JSONDecodeError:
             return raw
 
+        if not isinstance(msg, dict):
+            return raw  # Not a JSON-RPC object, pass through
+
         # Only scan tool call results
         result = msg.get("result")
-        if not result or "content" not in result:
+        if not isinstance(result, dict) or "content" not in result:
             return raw
 
         response = ToolCallResponse(
@@ -229,15 +307,18 @@ class StdioProxy:
 
         response, decisions = self.pipeline.scan_outbound(dummy_request, response)
 
+        # Evaluate ALL decisions — DENY wins regardless of stage order
+        deny = next((d for d in decisions if d.action == Action.DENY), None)
+        if deny:
+            self.console.print(f"  [red]✗ BLOCKED RESPONSE[/red]: {deny.reason}")
+            msg["result"]["content"] = [
+                {"type": "text", "text": f"[mcp-firewall] Response blocked: {deny.reason}"}
+            ]
+            msg["result"]["isError"] = True
+            return json.dumps(msg).encode()
+
         for d in decisions:
-            if d.action == Action.DENY:
-                self.console.print(f"  [red]✗ BLOCKED RESPONSE[/red]: {d.reason}")
-                msg["result"]["content"] = [
-                    {"type": "text", "text": f"[mcp-firewall] Response blocked: {d.reason}"}
-                ]
-                msg["result"]["isError"] = True
-                return json.dumps(msg).encode()
-            elif d.action == Action.REDACT:
+            if d.action == Action.REDACT:
                 self.console.print(f"  [yellow]~ REDACTED[/yellow]: {d.reason}")
                 msg["result"]["content"] = response.content
                 return json.dumps(msg).encode()

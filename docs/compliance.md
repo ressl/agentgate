@@ -32,7 +32,7 @@ mcp-firewall report soc2 --audit-log mcp-firewall.audit.jsonl --output soc2-evid
 **Covers:**
 - **CC6** — Logical Access Controls (RBAC, kill switch)
 - **CC7** — System Operations (threat detection, monitoring, alerting)
-- **CC8** — Change Management (policy-as-code, hot reload)
+- **CC8** — Change Management (policy-as-code, runtime config reload via SDK)
 
 ## Audit Trail Integrity
 

@@ -3,8 +3,7 @@
 from __future__ import annotations
 
 import base64
-import hashlib
-import json
+import os
 from pathlib import Path
 
 from cryptography.hazmat.primitives.asymmetric.ed25519 import (
@@ -19,11 +18,27 @@ from cryptography.hazmat.primitives.serialization import (
 )
 
 
+def _default_key_path() -> Path:
+    """Default signing key location: ``$XDG_CONFIG_HOME/mcp-firewall/mcp-firewall.key``.
+
+    Falls back to ``~/.config/mcp-firewall/mcp-firewall.key``. An absolute,
+    per-user path is used so the key does not end up in whichever project
+    directory happens to be the current working directory.
+    """
+    config_home = Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config")
+    return config_home / "mcp-firewall" / "mcp-firewall.key"
+
+
 class AuditSigner:
-    """Sign and verify audit log entries with Ed25519."""
+    """Sign and verify audit log entries with Ed25519.
+
+    The private key is stored unencrypted (PKCS8/PEM) and protected by
+    filesystem permissions only (0600, owner read/write). Keep it out of
+    version control (``mcp-firewall.key`` is gitignored by default).
+    """
 
     def __init__(self, key_path: str | Path | None = None) -> None:
-        self._key_path = Path(key_path) if key_path else Path("mcp-firewall.key")
+        self._key_path = Path(key_path) if key_path else _default_key_path()
         self._pub_path = self._key_path.with_suffix(".pub")
         self._private_key: Ed25519PrivateKey | None = None
         self._public_key: Ed25519PublicKey | None = None
@@ -38,12 +53,17 @@ class AuditSigner:
         self._private_key = Ed25519PrivateKey.generate()
         self._public_key = self._private_key.public_key()
 
-        # Save private key
+        # Save private key. The file is created with mode 0o600 via os.open so
+        # there is no window between write_bytes() and chmod() where the key
+        # would be readable under a permissive umask.
         pem = self._private_key.private_bytes(
             Encoding.PEM, PrivateFormat.PKCS8, NoEncryption()
         )
-        self._key_path.write_bytes(pem)
-        self._key_path.chmod(0o600)
+        self._key_path.parent.mkdir(parents=True, exist_ok=True)
+        fd = os.open(self._key_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "wb") as f:
+            f.write(pem)
+        self._key_path.chmod(0o600)  # enforce 0o600 even if the file pre-existed
 
         # Save public key
         pub_pem = self._public_key.public_bytes(Encoding.PEM, PublicFormat.SubjectPublicKeyInfo)

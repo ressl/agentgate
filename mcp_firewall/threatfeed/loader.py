@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import fnmatch
+import logging
 import re
 from pathlib import Path
 from typing import Any
@@ -10,6 +11,8 @@ from typing import Any
 import yaml
 
 from ..models import Action, Severity
+
+logger = logging.getLogger(__name__)
 
 
 class ThreatRule:
@@ -33,31 +36,68 @@ class ThreatRule:
         self.action = action
         self.tags = tags or []
         self._compiled_patterns: dict[str, re.Pattern] = {}
+        self._compile_failed = False
         self._compile()
 
     def _compile(self) -> None:
-        """Pre-compile regex patterns for performance."""
+        """Pre-compile match patterns for performance.
+
+        Patterns use glob syntax (``|`` separates alternatives). A rule with an
+        invalid or non-string pattern is disabled (fail-closed) so it can never
+        match every request.
+        """
         args = self.match.get("arguments", {})
         for key, pattern in args.items():
-            if isinstance(pattern, str):
-                # Convert glob-like patterns to regex
-                regex = pattern.replace("*", ".*").replace("?", ".")
-                try:
-                    self._compiled_patterns[key] = re.compile(regex, re.IGNORECASE)
-                except re.error:
-                    pass
+            if not isinstance(pattern, str):
+                logger.warning(
+                    "Threat rule %s: non-string pattern for argument '%s', rule disabled",
+                    self.id, key,
+                )
+                self._compile_failed = True
+                continue
+            try:
+                self._compiled_patterns[key] = re.compile(
+                    _glob_to_regex(pattern), re.IGNORECASE
+                )
+            except re.error:
+                logger.warning(
+                    "Threat rule %s: invalid pattern for argument '%s', rule disabled",
+                    self.id, key,
+                )
+                self._compile_failed = True
 
         # Tool name pattern
         tool_pattern = self.match.get("tool")
         if tool_pattern:
-            regex = tool_pattern.replace("*", ".*").replace("|", "|")
             try:
-                self._compiled_patterns["__tool__"] = re.compile(f"^({regex})$", re.IGNORECASE)
+                self._compiled_patterns["__tool__"] = re.compile(
+                    _glob_to_regex(tool_pattern), re.IGNORECASE
+                )
             except re.error:
-                pass
+                logger.warning(
+                    "Threat rule %s: invalid tool pattern, rule disabled", self.id
+                )
+                self._compile_failed = True
+
+        # Description pattern (raw regex, matched against all argument values)
+        desc_pattern = self.match.get("description")
+        if desc_pattern:
+            try:
+                self._compiled_patterns["__description__"] = re.compile(
+                    desc_pattern, re.IGNORECASE
+                )
+            except re.error:
+                logger.warning(
+                    "Threat rule %s: invalid description pattern, rule disabled", self.id
+                )
+                self._compile_failed = True
 
     def matches(self, tool_name: str, arguments: dict[str, Any]) -> bool:
         """Check if a tool call matches this rule."""
+        if self._compile_failed:
+            # Fail closed: a broken rule must never match
+            return False
+
         # Check tool name
         tool_pattern = self._compiled_patterns.get("__tool__")
         if tool_pattern and not tool_pattern.match(tool_name):
@@ -74,15 +114,17 @@ class ThreatRule:
                     return False
 
             compiled = self._compiled_patterns.get(key)
-            if compiled and isinstance(value, str):
-                if not compiled.search(value):
+            if compiled:
+                if not isinstance(value, str):
+                    value = str(value)
+                if not compiled.match(value):
                     return False
 
         # Check description patterns (match against all string values)
-        desc_pattern = self.match.get("description")
+        desc_pattern = self._compiled_patterns.get("__description__")
         if desc_pattern:
             all_text = " ".join(str(v) for v in arguments.values())
-            if not re.search(desc_pattern, all_text, re.IGNORECASE):
+            if not desc_pattern.search(all_text):
                 return False
 
         return True
@@ -145,6 +187,14 @@ class ThreatFeed:
             }
             for r in self.rules
         ]
+
+
+def _glob_to_regex(pattern: str) -> str:
+    """Translate a glob pattern with ``|`` alternatives into a single regex."""
+    alternatives = [fnmatch.translate(part) for part in pattern.split("|")]
+    if len(alternatives) == 1:
+        return alternatives[0]
+    return "(?:" + "|".join(alternatives) + ")"
 
 
 def _find_in_args(key: str, args: dict[str, Any], depth: int = 0) -> str | None:

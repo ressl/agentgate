@@ -4,15 +4,20 @@ from __future__ import annotations
 
 import asyncio
 import json
+import threading
 import time
 from collections import defaultdict
 from pathlib import Path
 from typing import Any
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, Query, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse
 
 from ..models import Action, Severity
+
+# Cap for the by_* aggregation dicts: tool and agent names are
+# attacker-controlled, so the number of distinct keys must stay bounded.
+MAX_AGG_KEYS = 1000
 
 
 class DashboardState:
@@ -33,45 +38,77 @@ class DashboardState:
         self.by_stage: dict[str, int] = defaultdict(int)
         self._websockets: list[WebSocket] = []
         self._start_time = time.time()
+        # Guards all mutable state above; add_event() is called from the
+        # proxy thread while the uvicorn loop reads/writes it in its own.
+        self._lock = threading.Lock()
+        # Event loop the dashboard server runs on (set by server.py).
+        self._loop: asyncio.AbstractEventLoop | None = None
+
+    def set_loop(self, loop: asyncio.AbstractEventLoop | None) -> None:
+        """Register the event loop the dashboard server runs on."""
+        with self._lock:
+            self._loop = loop
+
+    @staticmethod
+    def _bump(counter: dict[str, int], key: str) -> None:
+        if key in counter or len(counter) < MAX_AGG_KEYS:
+            counter[key] += 1
+        else:
+            counter["other"] += 1
 
     def add_event(self, event: dict[str, Any]) -> None:
-        self.events.append(event)
-        if len(self.events) > 5000:
-            self.events = self.events[-2500:]
+        with self._lock:
+            self.events.append(event)
+            if len(self.events) > 5000:
+                self.events = self.events[-2500:]
 
-        self.stats["total"] += 1
-        action = event.get("action", "allow")
-        if action == "allow":
-            self.stats["allowed"] += 1
-        elif action == "deny":
-            self.stats["denied"] += 1
-        elif action == "redact":
-            self.stats["redacted"] += 1
-        elif action == "prompt":
-            self.stats["prompted"] += 1
+            self.stats["total"] += 1
+            action = event.get("action", "allow")
+            if action == "allow":
+                self.stats["allowed"] += 1
+            elif action == "deny":
+                self.stats["denied"] += 1
+            elif action == "redact":
+                self.stats["redacted"] += 1
+            elif action == "prompt":
+                self.stats["prompted"] += 1
 
-        self.by_severity[event.get("severity", "info")] += 1
-        self.by_tool[event.get("tool", "unknown")] += 1
-        self.by_agent[event.get("agent", "unknown")] += 1
-        if event.get("stage"):
-            self.by_stage[event["stage"]] += 1
+            self._bump(self.by_severity, event.get("severity", "info"))
+            self._bump(self.by_tool, event.get("tool", "unknown"))
+            self._bump(self.by_agent, event.get("agent", "unknown"))
+            if event.get("stage"):
+                self._bump(self.by_stage, event["stage"])
 
-        # Broadcast to websockets (best-effort)
-        try:
-            loop = asyncio.get_running_loop()
-            loop.create_task(self._broadcast(event))
-        except RuntimeError:
-            pass  # No event loop (sync context, tests)
+            loop = self._loop
+
+        # Broadcast to websockets (best-effort). The websockets belong to the
+        # uvicorn loop, so the broadcast must be scheduled there — never via
+        # create_task on the caller's (proxy) loop.
+        if loop is not None:
+            try:
+                loop.call_soon_threadsafe(loop.create_task, self._broadcast(event))
+            except RuntimeError:
+                pass  # Loop closed
+        else:
+            try:
+                running = asyncio.get_running_loop()
+                running.create_task(self._broadcast(event))
+            except RuntimeError:
+                pass  # No event loop (sync context, tests)
 
     async def _broadcast(self, event: dict[str, Any]) -> None:
+        with self._lock:
+            targets = list(self._websockets)
         dead: list[WebSocket] = []
-        for ws in self._websockets:
+        for ws in targets:
             try:
                 await ws.send_json(event)
             except Exception:
                 dead.append(ws)
-        for ws in dead:
-            self._websockets.remove(ws)
+        with self._lock:
+            for ws in dead:
+                if ws in self._websockets:
+                    self._websockets.remove(ws)
 
     @property
     def uptime_seconds(self) -> float:
@@ -91,29 +128,35 @@ async def index():
 
 @app.get("/api/stats")
 async def api_stats():
-    return {
-        "stats": state.stats,
-        "by_severity": dict(state.by_severity),
-        "by_tool": dict(state.by_tool),
-        "by_agent": dict(state.by_agent),
-        "by_stage": dict(state.by_stage),
-        "uptime": int(state.uptime_seconds),
-        "events_buffered": len(state.events),
-    }
+    with state._lock:
+        return {
+            "stats": dict(state.stats),
+            "by_severity": dict(state.by_severity),
+            "by_tool": dict(state.by_tool),
+            "by_agent": dict(state.by_agent),
+            "by_stage": dict(state.by_stage),
+            "uptime": int(state.uptime_seconds),
+            "events_buffered": len(state.events),
+        }
 
 
 @app.get("/api/events")
-async def api_events(limit: int = 50):
-    return state.events[-limit:]
+async def api_events(limit: int = Query(50, ge=1, le=1000)):
+    with state._lock:
+        events = list(state.events[-limit:])
+    # Tag replays so the client does not count them against the live stats.
+    return [dict(event, replay=True) for event in events]
 
 
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
     await websocket.accept()
-    state._websockets.append(websocket)
+    with state._lock:
+        state._websockets.append(websocket)
+        replay = [dict(event, replay=True) for event in state.events[-20:]]
     try:
         # Send recent events on connect
-        for event in state.events[-20:]:
+        for event in replay:
             await websocket.send_json(event)
         # Keep alive
         while True:
@@ -121,8 +164,9 @@ async def websocket_endpoint(websocket: WebSocket):
     except WebSocketDisconnect:
         pass
     finally:
-        if websocket in state._websockets:
-            state._websockets.remove(websocket)
+        with state._lock:
+            if websocket in state._websockets:
+                state._websockets.remove(websocket)
 
 
 DASHBOARD_HTML = """<!DOCTYPE html>
@@ -208,23 +252,35 @@ function addEvent(evt) {
   const el = document.getElementById('events');
   const div = document.createElement('div');
   div.className = 'event';
-  const actionClass = 'action-' + (evt.action || 'allow');
-  div.innerHTML = `
-    <span class="time">${formatTime(evt.timestamp || Date.now()/1000)}</span>
-    <span class="sev">${sevEmoji[evt.severity] || '⚪'}</span>
-    <span class="tool">${evt.tool || 'n/a'}</span>
-    <span class="agent">${evt.agent || 'unknown'}</span>
-    <span class="${actionClass}">${(evt.action || 'allow').toUpperCase()}</span>
-    <span class="reason">${evt.reason || ''}</span>
-  `;
+  const action = evt.action || 'allow';
+  // Build cells via textContent — tool/agent/reason are attacker-controlled
+  // and must never be interpolated into innerHTML.
+  const cells = [
+    ['time', formatTime(evt.timestamp || Date.now()/1000)],
+    ['sev', sevEmoji[evt.severity] || '⚪'],
+    ['tool', evt.tool || 'n/a'],
+    ['agent', evt.agent || 'unknown'],
+    ['action-' + action, action.toUpperCase()],
+    ['reason', evt.reason || ''],
+  ];
+  for (const [cls, text] of cells) {
+    const span = document.createElement('span');
+    span.className = cls;
+    span.textContent = text;
+    div.appendChild(span);
+  }
   el.insertBefore(div, el.firstChild);
   if (el.children.length > 200) el.removeChild(el.lastChild);
 
-  stats.total++;
-  if (evt.action === 'deny') stats.denied++;
-  else if (evt.action === 'redact') stats.redacted++;
-  else stats.allowed++;
-  updateStats();
+  // Server stats are the source of truth; only count live events locally,
+  // never replays (REST/WS history) — those are already in the server stats.
+  if (!evt.replay) {
+    stats.total++;
+    if (action === 'deny') stats.denied++;
+    else if (action === 'redact') stats.redacted++;
+    else stats.allowed++;
+    updateStats();
+  }
 }
 
 function connectWS() {
@@ -241,7 +297,7 @@ fetch('/api/stats').then(r => r.json()).then(data => {
   updateStats();
 });
 
-// Load recent events
+// Load recent events (replay — renders without touching the counters)
 fetch('/api/events?limit=50').then(r => r.json()).then(events => {
   events.forEach(addEvent);
 });

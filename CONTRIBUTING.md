@@ -32,7 +32,7 @@ Community rules are welcome! To contribute a detection rule:
 
 ## Policies
 
-If you have a useful OPA/Rego policy for a specific use case (healthcare, finance, etc.), consider contributing it to `examples/policies/`.
+If you have a useful YAML policy for a specific use case (healthcare, finance, etc.), consider contributing it to `examples/policies/`.
 
 ## Code of Conduct
 

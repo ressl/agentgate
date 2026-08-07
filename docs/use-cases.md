@@ -156,11 +156,26 @@ mcp-firewall wrap --dashboard -- python internal_mcp_server.py
 ```yaml
 # Alerts an Splunk/Elastic via Syslog CEF
 alerts:
-  - channel: syslog
+  enabled: true
+  minSeverity: high        # critical|high|medium|low|info
+  slack:
+    webhookUrl: https://hooks.slack.com/services/...
+    channel: "#sec"        # optional
+  webhook:
+    url: https://siem.example.com/alerts
+    headers: {Authorization: "Bearer ..."}   # optional
+  syslog:
     host: siem.corp.local
     port: 514
-    min_severity: high
+
+threatFeed:
+  enabled: true            # Default true; Built-in-Rules aus mcp_firewall/threatfeed/rules/
+  feedDir: ./my-rules      # optionales Custom-Rules-Verzeichnis
 ```
+
+Alerts feuern auf DENY- und ALERT-Decisions mit severity >= `minSeverity` — sowohl inbound (geblockte Tool-Calls) als auch outbound (geblockte/veränderte Antworten).
+
+Hinweis zur Reihenfolge: Die Threat-Feed-Stage läuft **vor** der Policy-Stage. Eine permissive `allow`-Regel kann Built-in-Critical-Rules (z.B. Reverse Shell, Credential Harvesting) daher nicht überstimmen — das ist sicherheitsseitig gewollt.
 
 ---
 

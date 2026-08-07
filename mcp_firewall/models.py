@@ -54,6 +54,7 @@ class PipelineStage(str, Enum):
     RATE_LIMITER = "rate_limiter"
     INJECTION = "injection"
     EGRESS = "egress"
+    THREAT_FEED = "threat_feed"
     POLICY = "policy"
     CHAIN_DETECTOR = "chain_detector"
     HUMAN_APPROVAL = "human_approval"
@@ -122,6 +123,8 @@ class GatewayConfig(BaseModel):
     agents: dict[str, AgentConfig] = Field(default_factory=dict)
     rules: list[RuleConfig] = Field(default_factory=list)
     audit: AuditConfig = Field(default_factory=lambda: AuditConfig())
+    alerts: AlertsConfig = Field(default_factory=lambda: AlertsConfig())
+    threat_feed: ThreatFeedConfig = Field(default_factory=lambda: ThreatFeedConfig())
 
 
 class KillSwitchConfig(BaseModel):
@@ -195,3 +198,41 @@ class AuditConfig(BaseModel):
     path: str = "mcp-firewall.audit.jsonl"
     sign: bool = False  # Ed25519 signing (Phase 4)
     max_size_mb: int = 100
+
+
+class SlackAlertConfig(BaseModel):
+    """Slack alert channel configuration."""
+
+    webhook_url: str | None = None
+    channel: str | None = None
+
+
+class WebhookAlertConfig(BaseModel):
+    """Generic webhook alert channel configuration."""
+
+    url: str | None = None
+    headers: dict[str, str] = Field(default_factory=dict)
+
+
+class SyslogAlertConfig(BaseModel):
+    """Syslog (CEF) alert channel configuration."""
+
+    host: str = "localhost"
+    port: int = 514
+
+
+class AlertsConfig(BaseModel):
+    """Alerting configuration — notify on denied/alerted tool calls."""
+
+    enabled: bool = False  # off by default
+    min_severity: Severity = Severity.HIGH
+    slack: SlackAlertConfig | None = None
+    webhook: WebhookAlertConfig | None = None
+    syslog: SyslogAlertConfig | None = None
+
+
+class ThreatFeedConfig(BaseModel):
+    """Threat feed configuration — community detection rules."""
+
+    enabled: bool = True
+    feed_dir: str | None = None  # additional custom rules directory

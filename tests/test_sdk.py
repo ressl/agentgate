@@ -25,7 +25,9 @@ class TestGatewayCheck:
             RuleConfig(name="block-ssh", match={"arguments": {"path": "**/.ssh/**"}}, action=Action.DENY),
         ])
         gw = Gateway(config=config)
-        result = gw.check("read", {"path": "/home/user/.ssh/id_rsa"})
+        # Note: ~/.ssh/id_* itself is already denied earlier by threat feed rule
+        # TF-003; use a path the feed does not match to exercise the policy rule.
+        result = gw.check("read", {"path": "/home/user/.ssh/config"})
         assert result.blocked
         assert "block-ssh" in result.reason
 

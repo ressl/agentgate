@@ -4,10 +4,13 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import threading
 from pathlib import Path
 
 from ..models import Action, AuditEvent, GatewayConfig, PipelineDecision, Severity, ToolCallRequest
+
+_log = logging.getLogger(__name__)
 
 
 class AuditLogger:
@@ -20,6 +23,7 @@ class AuditLogger:
         self._previous_hash = "genesis"
         self._count = 0
         self._signer = None
+        self._max_bytes = max(config.audit.max_size_mb, 0) * 1024 * 1024
 
         if self.enabled:
             self.path.parent.mkdir(parents=True, exist_ok=True)
@@ -41,10 +45,12 @@ class AuditLogger:
                         last_line = line
                         self._count += 1
                 if last_line:
-                    entry = json.loads(last_line)
+                    json.loads(last_line)  # validate last line is parseable
                     self._previous_hash = self._hash_entry(last_line)
-        except Exception:
-            pass
+        except Exception as exc:
+            # Corrupt or unreadable log: the chain restarts at "genesis", which
+            # makes the break visible to verify_chain instead of hiding it.
+            _log.warning("Could not resume audit hash chain from %s: %s", self.path, exc)
 
     def log(
         self,
@@ -56,32 +62,86 @@ class AuditLogger:
         if not self.enabled:
             return
 
-        event = AuditEvent(
-            agent_id=request.agent_id,
-            tool_name=request.tool_name,
-            arguments_hash=self._hash_arguments(request.arguments),
-            decision=decision.action if decision else Action.ALLOW,
-            stage=decision.stage if decision else None,
-            reason=decision.reason if decision else "",
-            severity=decision.severity if decision else Severity.INFO,
-            latency_ms=latency_ms,
-            previous_hash=self._previous_hash,
-        )
-
-        data = json.loads(event.model_dump_json())
-
-        # Add signature if signing is enabled
-        if self._signer:
-            canonical = json.dumps(data, sort_keys=True, separators=(",", ":"))
-            data["signature"] = self._signer.sign(canonical)
-
-        line = json.dumps(data, separators=(",", ":"))
-
+        # The whole rotate -> read-hash -> sign -> write -> update-hash sequence
+        # must run under the lock, otherwise concurrent log() calls can read the
+        # same previous_hash and append entries in the wrong order, breaking the
+        # chain.
         with self._lock:
+            self._rotate_if_needed()
+
+            event = AuditEvent(
+                agent_id=request.agent_id,
+                tool_name=request.tool_name,
+                arguments_hash=self._hash_arguments(request.arguments),
+                decision=decision.action if decision else Action.ALLOW,
+                stage=decision.stage if decision else None,
+                reason=decision.reason if decision else "",
+                severity=decision.severity if decision else Severity.INFO,
+                latency_ms=latency_ms,
+                previous_hash=self._previous_hash,
+            )
+
+            data = json.loads(event.model_dump_json())
+
+            # Add signature if signing is enabled
+            if self._signer:
+                canonical = json.dumps(data, sort_keys=True, separators=(",", ":"))
+                data["signature"] = self._signer.sign(canonical)
+
+            line = json.dumps(data, separators=(",", ":"))
+
             with open(self.path, "a") as f:
                 f.write(line + "\n")
             self._previous_hash = self._hash_entry(line)
             self._count += 1
+
+    def _rotate_if_needed(self) -> None:
+        """Rotate the log once it has reached audit.max_size_mb.
+
+        Rotation keeps each file's hash chain intact: the current log is renamed
+        to ``<path>.1`` (a single old generation is kept, replacing any previous
+        one) and a fresh chain is started. The first entry of the new file is a
+        rotation marker whose reason records the hash of the previous chain
+        head, so the two generations remain linked. The check runs before each
+        append, so a file may overshoot the limit by at most one entry. Must be
+        called with the lock held.
+        """
+        if self._max_bytes <= 0:
+            return
+        try:
+            size = self.path.stat().st_size
+        except OSError:
+            return  # no log yet
+        if size < self._max_bytes:
+            return
+
+        rotated = self.path.with_name(self.path.name + ".1")
+        self.path.replace(rotated)
+        old_head = self._previous_hash
+        self._previous_hash = "genesis"
+        self._count = 0
+        _log.info("Audit log %s rotated to %s (size limit reached)", self.path, rotated)
+
+        marker = AuditEvent(
+            agent_id="mcp-firewall",
+            tool_name="audit.rotate",
+            arguments_hash="",
+            decision=Action.ALLOW,
+            stage=None,
+            reason=f"Audit log rotated; previous chain head: {old_head}",
+            severity=Severity.INFO,
+            latency_ms=0.0,
+            previous_hash="genesis",
+        )
+        data = json.loads(marker.model_dump_json())
+        if self._signer:
+            canonical = json.dumps(data, sort_keys=True, separators=(",", ":"))
+            data["signature"] = self._signer.sign(canonical)
+        line = json.dumps(data, separators=(",", ":"))
+        with open(self.path, "a") as f:
+            f.write(line + "\n")
+        self._previous_hash = self._hash_entry(line)
+        self._count += 1
 
     def verify_chain(self) -> tuple[bool, int, str]:
         """Verify the hash chain integrity.
@@ -89,7 +149,10 @@ class AuditLogger:
         Returns: (is_valid, entries_checked, error_message)
         """
         if not self.path.exists():
-            return True, 0, ""
+            # Distinguishable from an empty-but-present log (which returns
+            # (True, 0, "")): a missing file is reported as invalid so callers
+            # do not mistake "no log" for "integrity verified".
+            return False, 0, f"Audit log file not found: {self.path}"
 
         previous_hash = "genesis"
         count = 0

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 
 import httpx
@@ -28,6 +29,23 @@ class SlackChannel(AlertChannel):
     def __init__(self, webhook_url: str, channel: str | None = None) -> None:
         self.webhook_url = webhook_url
         self.channel = channel
+        self._client: httpx.AsyncClient | None = None
+        self._client_loop: asyncio.AbstractEventLoop | None = None
+
+    def _get_client(self) -> httpx.AsyncClient:
+        """Lazily create the shared HTTP client (recreated if closed or the loop changed)."""
+        loop = asyncio.get_running_loop()
+        if self._client is None or self._client.is_closed or self._client_loop is not loop:
+            self._client = httpx.AsyncClient(timeout=10)
+            self._client_loop = loop
+        return self._client
+
+    async def close(self) -> None:
+        """Close the shared HTTP client."""
+        if self._client is not None:
+            await self._client.aclose()
+            self._client = None
+            self._client_loop = None
 
     async def send(self, alert: AlertEvent) -> bool:
         emoji = SEVERITY_EMOJI.get(alert.severity, "⚪")
@@ -64,9 +82,8 @@ class SlackChannel(AlertChannel):
             payload["channel"] = self.channel
 
         try:
-            async with httpx.AsyncClient(timeout=10) as client:
-                resp = await client.post(self.webhook_url, json=payload)
-                return resp.is_success
+            resp = await self._get_client().post(self.webhook_url, json=payload)
+            return resp.is_success
         except Exception as e:
             logger.error(f"Slack alert failed: {e}")
             return False

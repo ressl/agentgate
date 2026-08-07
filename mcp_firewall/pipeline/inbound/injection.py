@@ -38,8 +38,8 @@ PATTERNS_MEDIUM = PATTERNS_LOW + [
 PATTERNS_HIGH = PATTERNS_MEDIUM + [
     (r"please\s+(always|never|only)", "Behavioral override"),
     (r"important:\s", "Priority escalation"),
-    (r"ADMIN|ROOT|SUDO|SUPERUSER", "Privilege keyword"),
-    (r"override|bypass|skip|disable", "Control bypass"),
+    (r"\b(?:ADMIN|ROOT|SUDO|SUPERUSER)\b", "Privilege keyword"),
+    (r"\b(?:override|bypass|skip|disable)\b", "Control bypass"),
     (r"[\u200b\u200c\u200d\u2060\ufeff]", "Invisible Unicode"),
 ]
 
@@ -76,26 +76,26 @@ class InjectionDetector(InboundStage):
         return None
 
 
-def _flatten_arguments(args: dict[str, Any], depth: int = 0) -> str:
-    """Recursively flatten arguments to a single searchable string."""
-    if depth > 5:
-        return ""
+# Maximum nesting depth searched when flattening arguments. Deeply nested
+# payloads beyond this bound are skipped; the bound also keeps cyclic
+# structures from looping forever.
+MAX_FLATTEN_DEPTH = 20
 
+
+def _flatten_arguments(args: dict[str, Any], max_depth: int = MAX_FLATTEN_DEPTH) -> str:
+    """Flatten arguments to a single searchable string (iterative, bounded)."""
     parts: list[str] = []
-    for key, value in args.items():
-        parts.append(str(key))
-        if isinstance(value, str):
-            parts.append(value)
-        elif isinstance(value, dict):
-            parts.append(_flatten_arguments(value, depth + 1))
-        elif isinstance(value, list):
-            for item in value:
-                if isinstance(item, str):
-                    parts.append(item)
-                elif isinstance(item, dict):
-                    parts.append(_flatten_arguments(item, depth + 1))
-                else:
-                    parts.append(str(item))
+    stack: list[tuple[Any, int]] = [(args, 0)]
+    while stack:
+        value, depth = stack.pop()
+        if depth > max_depth:
+            continue
+        if isinstance(value, dict):
+            for key, item in value.items():
+                parts.append(str(key))
+                stack.append((item, depth + 1))
+        elif isinstance(value, (list, tuple)):
+            stack.extend((item, depth + 1) for item in value)
         else:
             parts.append(str(value))
 

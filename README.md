@@ -33,23 +33,22 @@ mcp-firewall init
 ## Features
 
 ### 🔒 Defense-in-Depth Pipeline
-Every tool call passes through 8 inbound + 4 outbound security checks:
+Every tool call passes through 7 inbound security stages (plus optional human approval) and 2 outbound scanners:
 
 **Inbound** (request screening):
 1. Kill Switch — Emergency deny-all
-2. Agent Identity — RBAC per AI agent
-3. Rate Limiter — Per-agent, per-tool, global
-4. Injection Detector — 50+ patterns
-5. Egress Control — Block SSRF, private IPs, cloud metadata
-6. Policy Engine — OPA/Rego + YAML policies
+2. Rate Limiter — Per-agent, per-tool, global
+3. Injection Detector — Pattern-based, sensitivity configurable (low/medium/high)
+4. Egress Control — Block SSRF, private IPs, cloud metadata
+5. Threat Feed — Known attack patterns (built-in community rules)
+6. Policy Engine — YAML policies + per-agent RBAC
 7. Chain Detector — Dangerous tool sequences
-8. Human Approval — Optional interactive prompt
+
+When a rule requires approval, an interactive prompt asks the user; non-interactive sessions fail closed (deny).
 
 **Outbound** (response scanning):
 1. Secret Scanner — API keys, tokens, private keys
 2. PII Detector — Email, phone, SSN, IBAN, credit cards
-3. Exfil Detector — Embedded URLs, base64, DNS tunneling
-4. Content Policy — Custom domain-specific rules
 
 ### 📋 Policy-as-Code
 
@@ -67,16 +66,7 @@ rules:
     action: deny
 ```
 
-Full OPA/Rego for complex policies:
-```rego
-package mcp-firewall.policy
-
-allow {
-    input.agent == "cursor"
-    input.tool.name == "read_file"
-    not sensitive_path(input.tool.arguments.path)
-}
-```
+See [Policy Reference](docs/policies.md) for the full rule schema.
 
 ### 📊 Real-Time Dashboard
 
@@ -85,7 +75,7 @@ mcp-firewall wrap --dashboard -- python my_server.py
 # → Dashboard at http://localhost:9090
 ```
 
-Live event feed, analytics, alert history, and policy playground.
+Live event feed and statistics.
 
 ### 🔏 Signed Audit Trail
 
@@ -111,7 +101,6 @@ mcp-firewall report soc2     # SOC 2 Type II evidence
 Community-maintained detection rules (like Sigma for SIEM):
 
 ```bash
-mcp-firewall feed update     # Pull latest rules
 mcp-firewall feed list       # Show active rules
 ```
 
@@ -164,7 +153,6 @@ Compatible with: Claude Desktop, Claude Code, Cursor, VS Code, Windsurf, and any
 |---|---|---|---|---|
 | MCP-native proxy | ✅ | ✅ | ❌ | ✅ (SaaS) |
 | Open source | ✅ | ✅ | ✅ | ❌ |
-| OPA/Rego policies | ✅ | ❌ | ❌ | ❌ |
 | Agent RBAC | ✅ | ❌ | ❌ | ❌ |
 | Signed audit trail | ✅ | ❌ | ❌ | ❌ |
 | Compliance reports | ✅ | ❌ | ❌ | SOC2 only |

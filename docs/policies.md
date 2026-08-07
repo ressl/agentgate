@@ -5,7 +5,9 @@
 mcp-firewall uses `mcp-firewall.yaml` for policy configuration. Generate a starter config:
 
 ```bash
-mcp-firewall init
+mcp-firewall init                # Starter config (defaultAction: prompt)
+mcp-firewall init --enterprise   # Stricter template: deny-by-default, high
+                                 # injection sensitivity, PII detection, 60 calls/min
 ```
 
 ## Structure
@@ -124,6 +126,8 @@ When no rule matches:
 - `deny` — block the call (most restrictive)
 - `prompt` — ask the user (recommended)
 
+**Note:** Interactive approval requires a terminal. In non-interactive sessions — the normal case when an MCP client spawns the proxy over stdio — `prompt` decisions fail closed and the call is denied.
+
 ## Injection Detection Sensitivity
 
 | Level | Patterns | False Positive Rate |
@@ -132,6 +136,10 @@ When no rule matches:
 | `medium` | 13 patterns (default) | Low |
 | `high` | 18+ patterns incl. Unicode | Medium |
 
-## Hot Reload
+## Reloading Configuration
 
-Edit `mcp-firewall.yaml` while the proxy is running. Changes are applied on the next tool call.
+The proxy does not watch the config file — restart `mcp-firewall wrap` to apply changes. SDK users can reload at runtime without restarting their agent:
+
+```python
+gw.reload()  # Re-reads mcp-firewall.yaml, rebuilds alert channels and threat feed rules
+```
