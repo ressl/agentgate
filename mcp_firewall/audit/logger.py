@@ -12,7 +12,15 @@ from typing import Any
 
 from filelock import FileLock
 
-from ..models import Action, AuditEvent, GatewayConfig, PipelineDecision, Severity, ToolCallRequest
+from ..models import (
+    Action,
+    AuditEvent,
+    GatewayConfig,
+    PipelineDecision,
+    SecurityEvent,
+    Severity,
+    ToolCallRequest,
+)
 
 _log = logging.getLogger(__name__)
 
@@ -120,6 +128,8 @@ class AuditLogger:
         request: ToolCallRequest,
         decision: PipelineDecision | None,
         latency_ms: float = 0.0,
+        *,
+        security_event: SecurityEvent | None = None,
     ) -> None:
         """Log an audit event."""
         if not self.enabled:
@@ -138,15 +148,18 @@ class AuditLogger:
             self._rotate_if_needed()
 
             event = AuditEvent(
-                agent_id=request.agent_id,
-                tool_name=request.tool_name,
-                arguments_hash=self._hash_arguments(request.arguments),
+                agent_id=security_event.agent if security_event else request.agent_id,
+                tool_name=security_event.tool if security_event else request.tool_name,
+                arguments_hash=request.arguments_hash or self._hash_arguments(request.arguments),
                 decision=decision.action if decision else Action.ALLOW,
                 stage=decision.stage if decision else None,
-                reason=decision.reason if decision else "",
+                reason=security_event.reason
+                if security_event
+                else (decision.reason if decision else ""),
                 severity=decision.severity if decision else Severity.INFO,
                 latency_ms=latency_ms,
                 previous_hash=self._previous_hash,
+                event=security_event,
             )
 
             self._append(event)

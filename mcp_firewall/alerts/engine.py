@@ -6,6 +6,7 @@ import asyncio
 import logging
 from typing import Any
 
+from ..events import sanitize_text
 from ..models import Action, PipelineDecision, Severity, ToolCallRequest
 
 logger = logging.getLogger("mcp_firewall.alerts")
@@ -29,8 +30,19 @@ class AlertEvent:
         request: ToolCallRequest,
         decision: PipelineDecision,
     ) -> None:
-        self.request = request
-        self.decision = decision
+        self.request = request.model_copy(
+            update={
+                "tool_name": sanitize_text(request.tool_name),
+                "agent_id": sanitize_text(request.agent_id),
+                "arguments": {},
+            }
+        )
+        self.decision = decision.model_copy(
+            update={
+                "reason": sanitize_text(decision.reason),
+                "details": {},
+            }
+        )
 
     @property
     def severity(self) -> Severity:

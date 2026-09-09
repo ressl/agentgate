@@ -5,9 +5,19 @@ from __future__ import annotations
 import time
 import uuid
 from enum import Enum
-from typing import Any
+from typing import Any, Literal
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    StrictInt,
+    StrictStr,
+    field_validator,
+    model_validator,
+)
+
+UUID_PATTERN = r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
 
 
 class Action(str, Enum):  # noqa: UP042 — preserve the existing Enum string representation
@@ -72,6 +82,10 @@ class ToolCallRequest(BaseModel):
     arguments: dict[str, Any] = Field(default_factory=dict)
     agent_id: str = "unknown"
     timestamp: float = Field(default_factory=time.time)
+    call_id: str = Field(default_factory=lambda: str(uuid.uuid4()), pattern=UUID_PATTERN)
+    protocol_id: str | int | None = None
+    correlated: bool = True
+    arguments_hash: str | None = None
 
 
 class ToolCallResponse(BaseModel):
@@ -111,6 +125,60 @@ class PipelineDecision(BaseModel):
     details: dict[str, Any] = Field(default_factory=dict)
 
 
+class EventPhase(str, Enum):  # noqa: UP042
+    """Observed lifecycle boundaries; admission/forwarding do not prove execution."""
+
+    REQUEST_RECEIVED = "request_received"
+    POLICY_DECISION = "policy_decision"
+    REQUEST_ALLOWED = "request_allowed"
+    REQUEST_DENIED = "request_denied"
+    REQUEST_FORWARDED = "request_forwarded"
+    RESPONSE_RECEIVED = "response_received"
+    RESPONSE_FINDING = "response_finding"
+    RESPONSE_ALLOWED = "response_allowed"
+    RESPONSE_REDACTED = "response_redacted"
+    RESPONSE_DENIED = "response_denied"
+    RESPONSE_ERROR = "response_error"
+    REQUEST_UNKNOWN = "request_unknown"
+
+
+class SecurityEvent(BaseModel):
+    """Public, immutable event envelope. No raw arguments, output, or details."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    schema_version: Literal[1] = 1
+    id: str = Field(default_factory=lambda: str(uuid.uuid4()), pattern=UUID_PATTERN)
+    session_id: str = Field(pattern=UUID_PATTERN)
+    call_id: str = Field(pattern=UUID_PATTERN)
+    request_id: StrictStr | StrictInt | None = None
+    correlated: bool = True
+    sequence: int = Field(ge=1, strict=True)
+    timestamp: float = Field(default_factory=time.time, allow_inf_nan=False)
+    phase: EventPhase
+    response_is_error: bool | None = None
+    tool: str = Field(max_length=1024)
+    agent: str = Field(max_length=1024)
+    action: Action | None = None
+    severity: Severity = Severity.INFO
+    stage: PipelineStage | None = None
+    reason: str = Field(default="", max_length=1024)
+
+    @field_validator("request_id")
+    @classmethod
+    def bounded_request_id(cls, value: str | int | None) -> str | int | None:
+        if isinstance(value, str) and len(value) > 1024:
+            raise ValueError("Protocol ID exceeds event field limit")
+        return value
+
+
+class EventEnvelope(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    source: Literal["mcp-firewall"] = "mcp-firewall"
+    event: SecurityEvent
+
+
 class AuditEvent(BaseModel):
     """Immutable audit log entry."""
 
@@ -125,6 +193,7 @@ class AuditEvent(BaseModel):
     severity: Severity = Severity.INFO
     latency_ms: float = 0.0
     previous_hash: str = ""  # hash chain
+    event: SecurityEvent | None = None
 
 
 class GatewayConfig(BaseModel):
@@ -143,6 +212,7 @@ class GatewayConfig(BaseModel):
     audit: AuditConfig = Field(default_factory=lambda: AuditConfig())
     alerts: AlertsConfig = Field(default_factory=lambda: AlertsConfig())
     threat_feed: ThreatFeedConfig = Field(default_factory=lambda: ThreatFeedConfig())
+    events: EventsConfig = Field(default_factory=lambda: EventsConfig())
 
 
 class KillSwitchConfig(BaseModel):
@@ -230,6 +300,44 @@ class WebhookAlertConfig(BaseModel):
 
     url: str | None = None
     headers: dict[str, str] = Field(default_factory=dict)
+
+
+class EventWebhookConfig(BaseModel):
+    """Operator-configured event receiver; never taken from tool arguments."""
+
+    url: str
+    headers: dict[str, str] = Field(default_factory=dict, repr=False)
+    timeout_seconds: float = Field(default=2, ge=0.1, le=30)
+    max_retries: int = Field(default=2, ge=0, le=3)
+
+    @field_validator("url")
+    @classmethod
+    def valid_url(cls, value: str) -> str:
+        from urllib.parse import urlsplit
+
+        parsed = urlsplit(value)
+        if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+            raise ValueError("Event webhook needs an HTTP(S) URL")
+        if parsed.username or parsed.password or parsed.fragment:
+            raise ValueError(
+                "Use headers for authentication; URL credentials/fragments are forbidden"
+            )
+        return value
+
+
+class EventsConfig(BaseModel):
+    """Optional best-effort lifecycle export, independent of alert filtering."""
+
+    enabled: bool = False
+    queue_size: int = Field(default=256, ge=1, le=10000)
+    shutdown_timeout: float = Field(default=5, ge=0, le=30)
+    webhook: EventWebhookConfig | None = None
+
+    @model_validator(mode="after")
+    def require_receiver(self) -> EventsConfig:
+        if self.enabled and self.webhook is None:
+            raise ValueError("Enabled event export requires a webhook receiver")
+        return self
 
 
 class SyslogAlertConfig(BaseModel):

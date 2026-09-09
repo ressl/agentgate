@@ -1,0 +1,207 @@
+{
+  "$defs": {
+    "Action": {
+      "description": "Policy decision actions.",
+      "enum": [
+        "allow",
+        "deny",
+        "redact",
+        "prompt",
+        "alert"
+      ],
+      "title": "Action",
+      "type": "string"
+    },
+    "EventPhase": {
+      "description": "Observed lifecycle boundaries; admission/forwarding do not prove execution.",
+      "enum": [
+        "request_received",
+        "policy_decision",
+        "request_allowed",
+        "request_denied",
+        "request_forwarded",
+        "response_received",
+        "response_finding",
+        "response_allowed",
+        "response_redacted",
+        "response_denied",
+        "response_error",
+        "request_unknown"
+      ],
+      "title": "EventPhase",
+      "type": "string"
+    },
+    "PipelineStage": {
+      "description": "Pipeline stage identifiers.",
+      "enum": [
+        "kill_switch",
+        "agent_identity",
+        "rate_limiter",
+        "injection",
+        "egress",
+        "threat_feed",
+        "policy",
+        "chain_detector",
+        "human_approval",
+        "secret_scanner",
+        "pii_detector",
+        "exfil_detector",
+        "content_policy"
+      ],
+      "title": "PipelineStage",
+      "type": "string"
+    },
+    "SecurityEvent": {
+      "additionalProperties": false,
+      "description": "Public, immutable event envelope. No raw arguments, output, or details.",
+      "properties": {
+        "schema_version": {
+          "const": 1,
+          "default": 1,
+          "title": "Schema Version",
+          "type": "integer"
+        },
+        "id": {
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+          "title": "Id",
+          "type": "string"
+        },
+        "session_id": {
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+          "title": "Session Id",
+          "type": "string"
+        },
+        "call_id": {
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+          "title": "Call Id",
+          "type": "string"
+        },
+        "request_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Request Id"
+        },
+        "correlated": {
+          "default": true,
+          "title": "Correlated",
+          "type": "boolean"
+        },
+        "sequence": {
+          "minimum": 1,
+          "title": "Sequence",
+          "type": "integer"
+        },
+        "timestamp": {
+          "title": "Timestamp",
+          "type": "number"
+        },
+        "phase": {
+          "$ref": "#/$defs/EventPhase"
+        },
+        "response_is_error": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Response Is Error"
+        },
+        "tool": {
+          "maxLength": 1024,
+          "title": "Tool",
+          "type": "string"
+        },
+        "agent": {
+          "maxLength": 1024,
+          "title": "Agent",
+          "type": "string"
+        },
+        "action": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Action"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "severity": {
+          "$ref": "#/$defs/Severity",
+          "default": "info"
+        },
+        "stage": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/PipelineStage"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "reason": {
+          "default": "",
+          "maxLength": 1024,
+          "title": "Reason",
+          "type": "string"
+        }
+      },
+      "required": [
+        "session_id",
+        "call_id",
+        "sequence",
+        "phase",
+        "tool",
+        "agent"
+      ],
+      "title": "SecurityEvent",
+      "type": "object"
+    },
+    "Severity": {
+      "description": "Alert/finding severity levels.",
+      "enum": [
+        "critical",
+        "high",
+        "medium",
+        "low",
+        "info"
+      ],
+      "title": "Severity",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "source": {
+      "const": "mcp-firewall",
+      "default": "mcp-firewall",
+      "title": "Source",
+      "type": "string"
+    },
+    "event": {
+      "$ref": "#/$defs/SecurityEvent"
+    }
+  },
+  "required": [
+    "event"
+  ],
+  "title": "EventEnvelope",
+  "type": "object"
+}
