@@ -56,6 +56,7 @@ Without a context, its events are marked `correlated: false`. The returned
 from mcp_firewall.models import ToolCallResponse
 from mcp_firewall.sdk import Gateway
 
+
 async def inspect_example():
     async with Gateway(config_path="mcp-firewall.yaml") as gateway:
         decision = await gateway.acheck("status")

@@ -102,12 +102,21 @@ def test_wrap_dashboard_host_port_passed_through(runner: CliRunner, monkeypatch)
     monkeypatch.setattr("mcp_firewall.dashboard.server.start_dashboard", fake_start_dashboard)
     monkeypatch.setattr("mcp_firewall.proxy.stdio.StdioProxy", FakeProxy)
 
-    result = runner.invoke(main, [
-        "wrap", "--dashboard", "--dashboard-host", "0.0.0.0", "--dashboard-port", "9999",
-        "--", "echo",
-    ])
+    result = runner.invoke(
+        main,
+        [
+            "wrap",
+            "--dashboard",
+            "--dashboard-host",
+            "0.0.0.0",  # noqa: S104 - mocked bind; no socket opened
+            "--dashboard-port",
+            "9999",
+            "--",
+            "echo",
+        ],
+    )
     assert result.exit_code == 0, result.output
-    assert started == {"host": "0.0.0.0", "port": 9999}
+    assert started == {"host": "0.0.0.0", "port": 9999}  # noqa: S104 - mocked bind; no socket opened
     assert "http://0.0.0.0:9999" in result.output
 
 
@@ -134,7 +143,7 @@ def test_run_scan_preserves_quoting(monkeypatch) -> None:
     monkeypatch.setattr(importlib.util, "find_spec", lambda name: object())
     monkeypatch.setattr(scanner.subprocess, "run", fake_run)
 
-    args = ["python", "my server.py", "--path", "/tmp/with space"]
+    args = ["python", "my server.py", "--path", "/tmp/with space"]  # noqa: S108 - inert path fixture; no temporary I/O
     assert scanner.run_scan(args, ["--format", "json"]) == 0
 
     cmd = captured["cmd"]

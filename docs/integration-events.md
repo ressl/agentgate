@@ -181,8 +181,10 @@ For an in-process integration:
 from mcp_firewall.models import SecurityEvent
 from mcp_firewall.sdk import Gateway
 
+
 def on_event(event: SecurityEvent) -> None:
     print(event.call_id, event.phase.value)  # Runs on the delivery worker
+
 
 with Gateway(config_path="mcp-firewall.yaml", event_handler=on_event) as gateway:
     decision = gateway.check("status")

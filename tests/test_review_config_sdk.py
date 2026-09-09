@@ -38,13 +38,13 @@ class TestCamelCaseConfigKeys:
         cfg.write_text("killSwitch:\n  enabled: true\n  filePath: /tmp/custom-kill\n")
         config = load_config(cfg)
         assert config.kill_switch.enabled is True
-        assert config.kill_switch.file_path == "/tmp/custom-kill"
+        assert config.kill_switch.file_path == "/tmp/custom-kill"  # noqa: S108 - inert path fixture; no temporary I/O
 
     def test_snake_case_keys_still_work(self, tmp_path):
         cfg = tmp_path / "mcp-firewall.yaml"
         cfg.write_text("kill_switch:\n  file_path: /tmp/snake-kill\n")
         config = load_config(cfg)
-        assert config.kill_switch.file_path == "/tmp/snake-kill"
+        assert config.kill_switch.file_path == "/tmp/snake-kill"  # noqa: S108 - inert path fixture; no temporary I/O
 
 
 # --- L13: responseScanning vs. explicit secrets:/pii: sections ---
@@ -54,11 +54,7 @@ class TestResponseScanningPrecedence:
     def test_explicit_secrets_section_wins(self, tmp_path):
         cfg = tmp_path / "mcp-firewall.yaml"
         cfg.write_text(
-            "secrets:\n"
-            "  enabled: false\n"
-            "  action: deny\n"
-            "responseScanning:\n"
-            "  detectSecrets: true\n"
+            "secrets:\n  enabled: false\n  action: deny\nresponseScanning:\n  detectSecrets: true\n"
         )
         config = load_config(cfg)
         assert config.secrets.enabled is False

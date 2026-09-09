@@ -45,6 +45,7 @@ def make_proxy(config: GatewayConfig | None = None) -> StdioProxy:
 
 # --- H1: non-interactive approval fails closed ---
 
+
 class TestNonInteractiveApproval:
     def test_non_interactive_denies_by_default(self, monkeypatch):
         monkeypatch.setattr("sys.stdin.isatty", lambda: False)
@@ -71,6 +72,7 @@ class TestNonInteractiveApproval:
 
 # --- H2: approval runs off the event loop ---
 
+
 class TestAsyncApproval:
     async def test_aevaluate_non_interactive_denies(self, monkeypatch):
         monkeypatch.setattr("sys.stdin.isatty", lambda: False)
@@ -95,6 +97,7 @@ class TestAsyncApproval:
 
 
 # --- M14: "always" is scoped per (agent, tool) ---
+
 
 class TestAlwaysScoping:
     def test_always_applies_to_same_tool_only(self, monkeypatch):
@@ -130,6 +133,7 @@ class TestAlwaysScoping:
 
 # --- M12: KillSwitch signal registration ---
 
+
 class TestKillSwitchSignals:
     def test_works_outside_main_thread(self):
         errors = []
@@ -161,6 +165,7 @@ class TestKillSwitchSignals:
 
 
 # --- L1/L2: runner audit behavior ---
+
 
 class TestRunnerAudit:
     def test_approval_logged_once(self, tmp_path):
@@ -198,6 +203,7 @@ class TestRunnerAudit:
 
 # --- H3: proxy robustness on malformed messages ---
 
+
 class TestProxyRobustness:
     async def test_non_dict_json_dropped(self, capsys):
         proxy = make_proxy()
@@ -211,10 +217,14 @@ class TestProxyRobustness:
 
     async def test_invalid_tool_call_sends_error(self, capsys):
         proxy = make_proxy()
-        raw = json.dumps({
-            "jsonrpc": "2.0", "id": 7, "method": "tools/call",
-            "params": {"name": "exec", "arguments": [1, 2, 3]},
-        }).encode()
+        raw = json.dumps(
+            {
+                "jsonrpc": "2.0",
+                "id": 7,
+                "method": "tools/call",
+                "params": {"name": "exec", "arguments": [1, 2, 3]},
+            }
+        ).encode()
         assert await proxy._intercept_request(raw) is None
         out = capsys.readouterr().out
         assert '"error"' in out
@@ -222,10 +232,13 @@ class TestProxyRobustness:
 
     async def test_invalid_tool_call_notification_no_response(self, capsys):
         proxy = make_proxy()
-        raw = json.dumps({
-            "jsonrpc": "2.0", "method": "tools/call",
-            "params": {"name": "exec", "arguments": [1, 2, 3]},
-        }).encode()
+        raw = json.dumps(
+            {
+                "jsonrpc": "2.0",
+                "method": "tools/call",
+                "params": {"name": "exec", "arguments": [1, 2, 3]},
+            }
+        ).encode()
         assert await proxy._intercept_request(raw) is None
         assert capsys.readouterr().out == ""
 
@@ -236,15 +249,20 @@ class TestProxyRobustness:
 
 # --- H4: agent identity from initialize handshake ---
 
+
 class TestAgentIdentity:
     async def test_initialize_sets_agent_id(self):
         config = make_config(default_action=Action.ALLOW)
         proxy = make_proxy(config)
 
-        init = json.dumps({
-            "jsonrpc": "2.0", "id": 1, "method": "initialize",
-            "params": {"clientInfo": {"name": "claude-code", "version": "1.0"}},
-        }).encode()
+        init = json.dumps(
+            {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "initialize",
+                "params": {"clientInfo": {"name": "claude-code", "version": "1.0"}},
+            }
+        ).encode()
         # initialize is forwarded, not intercepted
         assert await proxy._intercept_request(init) == init
         assert proxy._agent_id == "claude-code"
@@ -254,15 +272,25 @@ class TestAgentIdentity:
         config.agents["evil-bot"] = AgentConfig(deny=["exec"])
         proxy = make_proxy(config)
 
-        await proxy._intercept_request(json.dumps({
-            "jsonrpc": "2.0", "id": 1, "method": "initialize",
-            "params": {"clientInfo": {"name": "evil-bot"}},
-        }).encode())
+        await proxy._intercept_request(
+            json.dumps(
+                {
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "method": "initialize",
+                    "params": {"clientInfo": {"name": "evil-bot"}},
+                }
+            ).encode()
+        )
 
-        raw = json.dumps({
-            "jsonrpc": "2.0", "id": 2, "method": "tools/call",
-            "params": {"name": "exec", "arguments": {"cmd": "ls"}},
-        }).encode()
+        raw = json.dumps(
+            {
+                "jsonrpc": "2.0",
+                "id": 2,
+                "method": "tools/call",
+                "params": {"name": "exec", "arguments": {"cmd": "ls"}},
+            }
+        ).encode()
         assert await proxy._intercept_request(raw) is None
         out = capsys.readouterr().out
         assert '"error"' in out
@@ -275,16 +303,21 @@ class TestAgentIdentity:
 
 # --- L12: denied calls use JSON-RPC error objects; notifications get none ---
 
+
 class TestDenyResponses:
     async def test_denied_call_returns_error_object(self, capsys):
         config = make_config(default_action=Action.ALLOW)
         config.rules = [RuleConfig(name="no-exec", tool="exec", action=Action.DENY)]
         proxy = make_proxy(config)
 
-        raw = json.dumps({
-            "jsonrpc": "2.0", "id": 5, "method": "tools/call",
-            "params": {"name": "exec", "arguments": {}},
-        }).encode()
+        raw = json.dumps(
+            {
+                "jsonrpc": "2.0",
+                "id": 5,
+                "method": "tools/call",
+                "params": {"name": "exec", "arguments": {}},
+            }
+        ).encode()
         assert await proxy._intercept_request(raw) is None
         out = capsys.readouterr().out
         response = json.loads(out.strip())
@@ -298,15 +331,19 @@ class TestDenyResponses:
         config.rules = [RuleConfig(name="no-exec", tool="exec", action=Action.DENY)]
         proxy = make_proxy(config)
 
-        raw = json.dumps({
-            "jsonrpc": "2.0", "method": "tools/call",
-            "params": {"name": "exec", "arguments": {}},
-        }).encode()
+        raw = json.dumps(
+            {
+                "jsonrpc": "2.0",
+                "method": "tools/call",
+                "params": {"name": "exec", "arguments": {}},
+            }
+        ).encode()
         assert await proxy._intercept_request(raw) is None
         assert capsys.readouterr().out == ""
 
 
 # --- M4: outbound DENY wins over earlier REDACT ---
+
 
 class TestOutboundEnforcement:
     async def test_deny_wins_over_redact(self):
@@ -316,15 +353,20 @@ class TestOutboundEnforcement:
         proxy = make_proxy(config)
 
         # SecretScanner (REDACT) runs before PIIDetector (DENY)
-        raw = json.dumps({
-            "jsonrpc": "2.0", "id": 9,
-            "result": {
-                "content": [{
-                    "type": "text",
-                    "text": "Key: AKIAIOSFODNN7EXAMPLE Email: test@test.com",
-                }],
-            },
-        }).encode()
+        raw = json.dumps(
+            {
+                "jsonrpc": "2.0",
+                "id": 9,
+                "result": {
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": "Key: AKIAIOSFODNN7EXAMPLE Email: test@test.com",
+                        }
+                    ],
+                },
+            }
+        ).encode()
         out = json.loads((await proxy._intercept_response(raw)).decode())
         assert out["result"]["isError"] is True
         assert "Response blocked" in out["result"]["content"][0]["text"]
@@ -332,17 +374,21 @@ class TestOutboundEnforcement:
 
     async def test_redact_applied_when_no_deny(self):
         proxy = make_proxy()
-        raw = json.dumps({
-            "jsonrpc": "2.0", "id": 9,
-            "result": {
-                "content": [{"type": "text", "text": "Key: AKIAIOSFODNN7EXAMPLE"}],
-            },
-        }).encode()
+        raw = json.dumps(
+            {
+                "jsonrpc": "2.0",
+                "id": 9,
+                "result": {
+                    "content": [{"type": "text", "text": "Key: AKIAIOSFODNN7EXAMPLE"}],
+                },
+            }
+        ).encode()
         out = json.loads((await proxy._intercept_response(raw)).decode())
         assert "[REDACTED" in out["result"]["content"][0]["text"]
 
 
 # --- M6: read buffer size limit ---
+
 
 class TestBufferLimit:
     async def test_oversized_server_message_closes_loop(self):
@@ -357,6 +403,7 @@ class TestBufferLimit:
 
 
 # --- M10: exit code mapping ---
+
 
 class TestExitCode:
     def test_sigterm_is_clean_exit(self):

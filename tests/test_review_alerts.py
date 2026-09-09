@@ -59,6 +59,7 @@ class FailingChannel(AlertChannel):
 
 # --- M15: alerts must not be silently lost ---
 
+
 class TestNoRunningLoop:
     def test_sync_fallback_without_any_loop(self):
         channel = RecordingChannel()
@@ -106,6 +107,7 @@ class TestRunningLoop:
 
 
 # --- L4: CEF escaping ---
+
 
 class TestCefEscaping:
     def test_header_escapes_backslash_pipe_newlines(self):
@@ -162,6 +164,7 @@ class TestCefEscaping:
 
 # --- L10: shared HTTP client per channel ---
 
+
 class TestSharedHttpClient:
     async def test_slack_client_is_reused(self):
         channel = SlackChannel("https://hooks.slack.com/test")
@@ -193,6 +196,7 @@ class TestSharedHttpClient:
 
 
 # --- reload_config resource cleanup: AlertEngine.close() ---
+
 
 class _RecordingCloseChannel(AlertChannel):
     name = "recording-close"

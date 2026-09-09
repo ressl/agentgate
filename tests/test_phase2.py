@@ -2,21 +2,20 @@
 
 from __future__ import annotations
 
-import time
-
 from mcp_firewall.models import (
     Action,
     AgentConfig,
     GatewayConfig,
-    RuleConfig,
     ToolCallRequest,
 )
-from mcp_firewall.pipeline.inbound.rate_limiter import RateLimiter, _parse_rate_limit
 from mcp_firewall.pipeline.inbound.chain_detector import ChainDetector
 from mcp_firewall.pipeline.inbound.human_approval import HumanApproval
+from mcp_firewall.pipeline.inbound.rate_limiter import RateLimiter, _parse_rate_limit
 
 
-def make_request(tool: str = "read_file", args: dict | None = None, agent: str = "test-agent") -> ToolCallRequest:
+def make_request(
+    tool: str = "read_file", args: dict | None = None, agent: str = "test-agent"
+) -> ToolCallRequest:
     return ToolCallRequest(tool_name=tool, arguments=args or {}, agent_id=agent)
 
 
@@ -25,6 +24,7 @@ def make_config(**kwargs) -> GatewayConfig:
 
 
 # --- Rate Limiter ---
+
 
 class TestRateLimiter:
     def test_under_limit(self):
@@ -103,6 +103,7 @@ class TestParseRateLimit:
 
 # --- Chain Detector ---
 
+
 class TestChainDetector:
     def test_single_tool_ok(self):
         cd = ChainDetector()
@@ -162,6 +163,7 @@ class TestChainDetector:
 
 # --- Human Approval ---
 
+
 class TestHumanApproval:
     def test_auto_approve(self):
         ha = HumanApproval(auto_approve=True)
@@ -173,12 +175,14 @@ class TestHumanApproval:
 
 # --- Integration: Pipeline with all Phase 2 stages ---
 
+
 class TestPipelinePhase2:
     def test_rate_limit_in_pipeline(self):
         config = make_config(default_action=Action.ALLOW)
         config.rate_limit.max_calls = 3
         config.audit.enabled = False
         from mcp_firewall.pipeline.runner import PipelineRunner
+
         runner = PipelineRunner(config)
         for _ in range(3):
             runner.evaluate_inbound(make_request())
@@ -191,6 +195,7 @@ class TestPipelinePhase2:
         config.rate_limit.max_calls = 1000
         config.audit.enabled = False
         from mcp_firewall.pipeline.runner import PipelineRunner
+
         runner = PipelineRunner(config)
         runner.evaluate_inbound(make_request(tool="read_file"))
         result = runner.evaluate_inbound(make_request(tool="http_post"))

@@ -2,15 +2,10 @@
 
 from __future__ import annotations
 
-import asyncio
-
-import pytest
 from fastapi.testclient import TestClient
 
 from mcp_firewall.alerts.engine import AlertEngine, AlertEvent
-from mcp_firewall.alerts.webhook import WebhookChannel
-from mcp_firewall.alerts.slack import SlackChannel
-from mcp_firewall.dashboard.app import DashboardState, app, state
+from mcp_firewall.dashboard.app import DashboardState, app
 from mcp_firewall.models import (
     Action,
     PipelineDecision,
@@ -38,6 +33,7 @@ def make_decision(
 
 
 # --- Alert Engine ---
+
 
 class TestAlertEngine:
     def test_records_deny_events(self):
@@ -89,6 +85,7 @@ class TestAlertEvent:
 
 # --- Dashboard State ---
 
+
 class TestDashboardState:
     def test_add_event(self):
         s = DashboardState()
@@ -123,6 +120,7 @@ class TestDashboardState:
 
 # --- Dashboard API ---
 
+
 class TestDashboardAPI:
     def test_index(self):
         client = TestClient(app)
@@ -147,6 +145,6 @@ class TestDashboardAPI:
 
     def test_websocket(self):
         client = TestClient(app)
-        with client.websocket_connect("/ws") as ws:
+        with client.websocket_connect("/ws"):
             # Should connect without error
             pass  # Auto-closes

@@ -1,0 +1,160 @@
+name: CI
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  quality:
+    name: Quality
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.11'
+          cache: pip
+          cache-dependency-path: |
+            pyproject.toml
+            requirements/ci.txt
+      - run: python -m pip install -r requirements/ci.txt -e .
+      - run: ruff check .
+      - run: ruff format --check .
+      - run: mypy mcp_firewall
+
+  python:
+    name: Python ${{ matrix.python }} / Linux
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ['3.11', '3.12', '3.13', '3.14']
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: ${{ matrix.python }}
+          cache: pip
+          cache-dependency-path: |
+            pyproject.toml
+            requirements/ci.txt
+      - run: python -m pip install -r requirements/ci.txt -e .
+      - run: python -m pytest -q
+
+  agentreins:
+    name: AgentReins / macOS
+    runs-on: macos-15
+    timeout-minutes: 15
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_26.3.app/Contents/Developer
+      AGENTREINS_COMMIT: dbd4f0abe3ff2d2cd590ac4f7b8e144d7375edbb
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.11'
+          cache: pip
+          cache-dependency-path: |
+            pyproject.toml
+            requirements/ci.txt
+      - run: python -m pip install -r requirements/ci.txt -e .
+      - run: python -m pytest -q
+      - name: Fetch and install the pinned native adapter
+        shell: bash
+        run: |
+          checkout="$RUNNER_TEMP/AgentReins"
+          git init "$checkout"
+          git -C "$checkout" remote add origin https://github.com/yardfribley-bit/AgentReins.git
+          git -C "$checkout" fetch --depth=1 origin "$AGENTREINS_COMMIT"
+          git -C "$checkout" checkout --detach FETCH_HEAD
+          python integrations/agentreins/install.py "$checkout"
+      - name: Build and test AgentReins
+        run: swift test --package-path "$RUNNER_TEMP/AgentReins"
+      - name: Exercise the real Swift controller and Python proxy
+        run: python integrations/agentreins/verify.py "$RUNNER_TEMP/AgentReins"
+
+  package:
+    name: Package
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.11'
+          cache: pip
+          cache-dependency-path: |
+            pyproject.toml
+            requirements/ci.txt
+      - run: python -m pip install -r requirements/ci.txt
+      - run: python -m build
+      - run: python -m twine check --strict dist/*
+      - name: Check archive contents and record build identity
+        env:
+          SOURCE_SHA: ${{ github.sha }}
+          SOURCE_REF: ${{ github.ref }}
+          CI_RUN_ID: ${{ github.run_id }}
+        run: python ci/check_artifacts.py dist
+      - name: Install and exercise each archive outside the source checkout
+        shell: bash
+        run: |
+          version=$(python -c 'import tomllib; print(tomllib.load(open("pyproject.toml", "rb"))["project"]["version"])')
+          for archive in "$GITHUB_WORKSPACE"/dist/*.whl "$GITHUB_WORKSPACE"/dist/*.tar.gz; do
+            env_dir=$(mktemp -d "$RUNNER_TEMP/package-smoke.XXXXXX")
+            python -m venv "$env_dir/venv"
+            "$env_dir/venv/bin/python" -m pip install "$archive"
+            (cd "$env_dir" && "$env_dir/venv/bin/python" -I "$GITHUB_WORKSPACE/ci/smoke_installed.py" "$version" "$GITHUB_WORKSPACE")
+            (cd "$env_dir" && "$env_dir/venv/bin/mcp-firewall" --help)
+          done
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: python-distributions
+          path: |
+            dist/*.whl
+            dist/*.tar.gz
+            dist/SHA256SUMS
+            dist/BUILD-INFO.json
+          if-no-files-found: error
+          retention-days: 30
+
+  required:
+    name: Required checks
+    if: always()
+    needs: [quality, python, agentreins, package]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 2
+    steps:
+      - name: Require every job to succeed
+        env:
+          RESULTS: ${{ toJSON(needs) }}
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+          results = json.loads(os.environ["RESULTS"])
+          failed = {name: job["result"] for name, job in results.items() if job["result"] != "success"}
+          if failed:
+              raise SystemExit(f"Required jobs did not succeed: {failed}")
+          print("All required jobs succeeded")
+          PY
