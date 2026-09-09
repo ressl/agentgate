@@ -194,6 +194,13 @@ SDK approval requests now fail closed by default, and configured audit logging i
 respected. See the [SDK migration guide](docs/sdk-migration.md) for changed defaults,
 async methods, structured responses, and resource cleanup.
 
+## Desktop approvals
+
+Use `mcp-firewall wrap --dashboard-approvals -- <server>` for authenticated,
+single-call approval in the local dashboard. Set `MCP_FIREWALL_DASHBOARD_TOKEN`
+and connect the controller first. Missing approval, timeout or controller loss
+denies the call; global restrictions still apply. See [setup and limits](docs/desktop-approvals.md).
+
 ## Integration events
 
 Export versioned lifecycle events to a local desktop companion or another HTTP

@@ -141,10 +141,10 @@ async def test_async_check_does_not_block_loop_and_cancellation_never_means_exec
     gateway = Gateway(config=config(), event_handler=events.append)
     evaluate = gateway._pipeline._evaluate_inbound
 
-    def slow(request):
+    def slow(request, **kwargs):
         started.set()
         release.wait(5)
-        return evaluate(request)
+        return evaluate(request, **kwargs)
 
     monkeypatch.setattr(gateway._pipeline, "_evaluate_inbound", slow)
     task = asyncio.create_task(gateway.acheck("status"))

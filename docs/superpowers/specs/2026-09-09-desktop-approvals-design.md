@@ -45,8 +45,8 @@ Auto-approval and broker-based approval cannot be configured together.
 
 - [x] Inspect existing approval, proxy, SDK, dashboard, and CLI boundaries.
 - [x] Record the selected existing-dashboard approach and scope.
-- [ ] Reproduce required nonce/hash/timeout/disconnect/cancellation behavior in tests.
-- [ ] Implement broker, pipeline/SDK hooks, authenticated API, CLI, and UI.
-- [ ] Validate no policy bypass, no secret exposure, and bounded pending requests.
-- [ ] Test real HTTP/stdio approval and browser UI behavior.
-- [ ] Document setup and limits; run tests, lint/type checks, and package validation.
+- [x] Reproduce required nonce/hash/timeout/disconnect/cancellation behavior in tests.
+- [x] Implement broker, pipeline/SDK hooks, authenticated API, CLI, and UI.
+- [x] Validate no policy bypass, no secret exposure, and bounded pending requests.
+- [x] Test real HTTP/stdio approval and browser UI behavior.
+- [x] Document setup and limits; run tests, lint/type checks, and package validation.

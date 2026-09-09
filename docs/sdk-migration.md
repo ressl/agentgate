@@ -1,12 +1,14 @@
 # SDK migration: integration update (unreleased)
 
 This update changes security defaults. Review callers before upgrading an embedded
-deployment. It does not add desktop approvals or automatic filesystem recovery.
+deployment. Optional [local desktop approvals](desktop-approvals.md) are now available;
+automatic filesystem recovery remains outside this update.
 
 ## Approval and audit defaults
 
 `Gateway` now defaults to `auto_approve=False`. A policy requiring user approval
-fails closed in SDK mode, which has no interactive terminal prompt. Configure an
+fails closed in SDK mode unless an authenticated controller is connected through
+an explicitly supplied `ApprovalBroker`. SDK mode has no terminal prompt. Configure an
 explicit allow policy for intended operations. Applications that deliberately want
 the previous approval behavior can pass `auto_approve=True`; this only satisfies
 approval requirements and does not bypass global denials or other pipeline stages.
@@ -77,7 +79,8 @@ Scanning works on a copy, preserving the caller's response object.
 `acheck`, `ascan_response`, `ascan_tool_response`, `areload`, and `aclose` run blocking
 operations outside the caller's event loop. One Gateway serializes policy access;
 concurrent checks still receive distinct call IDs. Cancelling a wait cannot forcibly
-cancel a running Python worker or system DNS lookup. The SDK never executes tools.
+cancel a running Python worker or system DNS lookup. An open broker approval for
+the cancelled check is revoked. The SDK never executes tools.
 
 ## Resource lifetime
 

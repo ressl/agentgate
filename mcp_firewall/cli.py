@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import sys
 from pathlib import Path
 
@@ -11,6 +12,7 @@ from rich.console import Console
 from rich.panel import Panel
 
 from . import __version__
+from .approvals import ApprovalBroker
 from .config import generate_default_config, load_config
 
 
@@ -26,7 +28,15 @@ def main() -> None:
 @click.option(
     "--config", "config_path", type=click.Path(exists=True), help="Path to mcp-firewall.yaml"
 )
-@click.option("--dashboard", is_flag=True, help="Enable real-time dashboard (Phase 3)")
+@click.option("--dashboard", is_flag=True, help="Enable real-time dashboard")
+@click.option("--dashboard-approvals", is_flag=True, help="Enable authenticated local approvals")
+@click.option(
+    "--approval-timeout",
+    default=60,
+    type=click.IntRange(1, 300),
+    show_default=True,
+    help="Maximum seconds to wait for a dashboard approval",
+)
 @click.option(
     "--dashboard-host", default="127.0.0.1", show_default=True, help="Dashboard bind host"
 )
@@ -39,11 +49,27 @@ def wrap(
     dashboard: bool,
     dashboard_host: str,
     dashboard_port: int,
+    dashboard_approvals: bool,
+    approval_timeout: int,
 ) -> None:
     """Wrap an MCP server with mcp-firewall protection.
 
     Usage: mcp-firewall wrap -- npx @modelcontextprotocol/server-filesystem /tmp
     """
+    broker = None
+    token = None
+    if dashboard_approvals:
+        from .dashboard.approvals import LOOPBACK_HOSTS, configure_approvals
+
+        if dashboard_host not in LOOPBACK_HOSTS:
+            raise click.ClickException("Approval dashboard must bind to loopback")
+        broker = ApprovalBroker(timeout_seconds=approval_timeout)
+        token = os.environ.get("MCP_FIREWALL_DASHBOARD_TOKEN")
+        try:
+            configure_approvals(broker, token)
+        except ValueError as exc:
+            raise click.ClickException(str(exc)) from None
+        dashboard = True
     console = Console(stderr=True)
 
     # Banner
@@ -70,20 +96,35 @@ def wrap(
     if dashboard:
         from .dashboard.server import start_dashboard
 
-        start_dashboard(host=dashboard_host, port=dashboard_port)
+        if broker is not None:
+            start_dashboard(
+                host=dashboard_host,
+                port=dashboard_port,
+                approval_broker=broker,
+                token=token,
+            )
+        else:
+            start_dashboard(host=dashboard_host, port=dashboard_port)
         console.print(f"  [green]Dashboard:[/green] http://{dashboard_host}:{dashboard_port}")
         console.print()
 
     # Start proxy
     from .proxy.stdio import StdioProxy
 
-    proxy = StdioProxy(config, console)
+    proxy = (
+        StdioProxy(config, console, approval_broker=broker)
+        if broker is not None
+        else StdioProxy(config, console)
+    )
 
     try:
         exit_code = asyncio.run(proxy.run(list(server_args)))
         sys.exit(exit_code)
     except KeyboardInterrupt:
         console.print("\n  [dim]Shutting down...[/dim]")
+    finally:
+        if broker is not None:
+            broker.close()
 
 
 @main.command()
