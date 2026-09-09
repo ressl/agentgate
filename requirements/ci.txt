@@ -1,0 +1,8 @@
+# Direct CI tools; application dependencies remain governed by pyproject.toml.
+ruff==0.16.6
+mypy==2.3.1
+pytest==9.1.1
+pytest-asyncio==1.4.0
+types-PyYAML==6.0.12.20260906
+build==1.6.0
+twine==7.0.0

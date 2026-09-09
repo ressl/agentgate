@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "mcp-firewall"
-version = "0.1.0"
+version = "0.2.0a1"
 description = "The open-source security gateway for AI agents. Policy enforcement, threat detection, and compliance-ready audit logging for MCP."
 readme = "README.md"
 license = {text = "AGPL-3.0-or-later"}
@@ -35,6 +35,7 @@ classifiers = [
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
     "Topic :: Security",
     "Topic :: System :: Networking :: Firewalls",
 ]

@@ -18,6 +18,7 @@ def evaluate(args: dict, config: GatewayConfig | None = None):
 
 # --- M1(1): embedded URLs with dangerous schemes are never extracted ---
 
+
 class TestDangerousSchemeExtraction:
     @pytest.mark.parametrize("scheme", ["gopher", "dict", "ftp", "ldap"])
     def test_embedded_dangerous_scheme(self, scheme):
@@ -34,6 +35,7 @@ class TestDangerousSchemeExtraction:
 
 
 # --- M1(2): case-sensitive startswith check ---
+
 
 class TestCaseInsensitiveScheme:
     def test_uppercase_scheme_direct_value(self):
@@ -53,6 +55,7 @@ class TestCaseInsensitiveScheme:
 
 
 # --- M1(3): bare IPs / hostnames as argument values ---
+
 
 class TestBareHostValues:
     def test_bare_cloud_metadata_ip(self):
@@ -103,6 +106,7 @@ class TestBareHostValues:
 
 # --- M1(4): non-canonical IPv4 forms bypass ipaddress ---
 
+
 class TestIPv4Normalization:
     def test_short_form_in_url(self):
         result = evaluate({"url": "http://127.1/"})
@@ -151,6 +155,7 @@ class TestIPv4Normalization:
 
 
 # --- M1(5): recursion depth and lists-in-lists ---
+
 
 class TestRecursion:
     def test_deeply_nested_dict(self):

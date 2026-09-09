@@ -36,6 +36,7 @@ def make_logger(tmp_path, **audit_overrides) -> AuditLogger:
 
 # --- M7: hash chain is race-free under concurrent log() calls ---
 
+
 class TestHashChainRace:
     def test_concurrent_loggers_keep_chain_intact(self, tmp_path):
         logger = make_logger(tmp_path)
@@ -55,6 +56,7 @@ class TestHashChainRace:
 
 
 # --- M8: audit.max_size_mb rotation ---
+
 
 class TestLogRotation:
     def test_rotation_on_size_limit(self, tmp_path):
@@ -89,12 +91,14 @@ class TestLogRotation:
 
         old_lines = Path(str(logger.path) + ".1").read_text().splitlines()
         import hashlib
+
         old_head = hashlib.sha256(old_lines[-1].encode()).hexdigest()
         first = json.loads(Path(logger.path).read_text().splitlines()[0])
         assert old_head in first["reason"]
 
 
 # --- L6: corrupt log resume warns instead of silently swallowing ---
+
 
 class TestResumeChain:
     def test_corrupt_last_line_warns(self, tmp_path, caplog):
@@ -119,6 +123,7 @@ class TestResumeChain:
 
 # --- L14: verify_chain distinguishes missing file from empty file ---
 
+
 class TestVerifyChainMissingFile:
     def test_missing_file_is_distinguishable(self, tmp_path):
         logger = make_logger(tmp_path)
@@ -138,6 +143,7 @@ class TestVerifyChainMissingFile:
 
 # --- L5: signing key location and permissions ---
 
+
 class TestSigningKeyDefaults:
     def test_default_key_path_under_config_home(self, tmp_path, monkeypatch):
         monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
@@ -149,6 +155,7 @@ class TestSigningKeyDefaults:
 
     def test_key_created_with_restrictive_permissions(self, tmp_path):
         import os
+
         old_umask = os.umask(0o022)  # permissive umask must not widen key perms
         try:
             signer = AuditSigner(key_path=tmp_path / "sub" / "dir" / "k.key")
@@ -160,14 +167,27 @@ class TestSigningKeyDefaults:
 
 # --- M16: null stage must not render as "None" rows ---
 
+
 class TestStageNone:
     def _log_with_null_stage(self, tmp_path) -> Path:
         log_path = tmp_path / "audit.jsonl"
         events = [
-            {"timestamp": 1708000000, "agent_id": "a", "tool_name": "t",
-             "decision": "allow", "severity": "info", "stage": None},
-            {"timestamp": 1708000001, "agent_id": "a", "tool_name": "t",
-             "decision": "deny", "severity": "high", "stage": "injection"},
+            {
+                "timestamp": 1708000000,
+                "agent_id": "a",
+                "tool_name": "t",
+                "decision": "allow",
+                "severity": "info",
+                "stage": None,
+            },
+            {
+                "timestamp": 1708000001,
+                "agent_id": "a",
+                "tool_name": "t",
+                "decision": "deny",
+                "severity": "high",
+                "stage": "injection",
+            },
         ]
         with open(log_path, "w") as f:
             for event in events:
@@ -188,14 +208,25 @@ class TestStageNone:
 
 # --- L9: streaming AuditData, full signature scan, real report numbers (L8) ---
 
+
 class TestAuditDataStreaming:
     def test_no_full_event_list_retained(self, tmp_path):
         log_path = tmp_path / "audit.jsonl"
         with open(log_path, "w") as f:
             for i in range(20):
-                f.write(json.dumps({"timestamp": 1708000000 + i, "agent_id": "a",
-                                    "tool_name": "t", "decision": "allow",
-                                    "severity": "info", "stage": "policy"}) + "\n")
+                f.write(
+                    json.dumps(
+                        {
+                            "timestamp": 1708000000 + i,
+                            "agent_id": "a",
+                            "tool_name": "t",
+                            "decision": "allow",
+                            "severity": "info",
+                            "stage": "policy",
+                        }
+                    )
+                    + "\n"
+                )
         data = AuditData(log_path)
         assert data.total == 20
         assert not hasattr(data, "events")
@@ -204,8 +235,14 @@ class TestAuditDataStreaming:
         log_path = tmp_path / "audit.jsonl"
         with open(log_path, "w") as f:
             for i in range(15):
-                event = {"timestamp": 1708000000 + i, "agent_id": "a", "tool_name": "t",
-                         "decision": "allow", "severity": "info", "stage": "policy"}
+                event = {
+                    "timestamp": 1708000000 + i,
+                    "agent_id": "a",
+                    "tool_name": "t",
+                    "decision": "allow",
+                    "severity": "info",
+                    "stage": "policy",
+                }
                 if i == 14:  # signature only in the last event
                     event["signature"] = "abc"
                 f.write(json.dumps(event) + "\n")
@@ -217,9 +254,19 @@ class TestAuditDataStreaming:
         log_path = tmp_path / "audit.jsonl"
         with open(log_path, "w") as f:
             for decision, agent in [("deny", "x"), ("deny", "x"), ("allow", "x"), ("deny", "y")]:
-                f.write(json.dumps({"timestamp": 1708000000, "agent_id": agent,
-                                    "tool_name": "t", "decision": decision,
-                                    "severity": "info", "stage": "policy"}) + "\n")
+                f.write(
+                    json.dumps(
+                        {
+                            "timestamp": 1708000000,
+                            "agent_id": agent,
+                            "tool_name": "t",
+                            "decision": decision,
+                            "severity": "info",
+                            "stage": "policy",
+                        }
+                    )
+                    + "\n"
+                )
         data = AuditData(log_path)
         assert data.by_agent_denied["x"] == 2
         assert data.by_agent_denied["y"] == 1

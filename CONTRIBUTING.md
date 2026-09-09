@@ -9,16 +9,21 @@ git clone https://github.com/ressl/mcp-firewall.git
 cd mcp-firewall
 python -m venv .venv
 source .venv/bin/activate
-pip install -e ".[dev]"
+pip install -r requirements/ci.txt -e ".[dev]"
 pytest
 ```
 
 ## Development
 
-- **Style:** Enforced by `ruff` (run `ruff check .` and `ruff format .`)
-- **Types:** Enforced by `mypy --strict`
+- **Style:** `ruff check .` and `ruff format --check .` (apply formatting with `ruff format .`)
+- **Types:** `mypy mcp_firewall` (strict mode is configured in `pyproject.toml`)
 - **Tests:** Required for all new features (`pytest`)
 - **Commits:** Conventional commits preferred (`feat:`, `fix:`, `docs:`)
+
+CI runs the full suite on Python 3.11–3.14 under Linux and Python 3.11 under macOS,
+plus the real [AgentReins integration](integrations/agentreins/README.md). Packaging
+builds and installs both archives in isolation. See [release validation](docs/releases.md)
+for job coverage, build identity and the publication procedure.
 
 ## Threat Feed Rules
 

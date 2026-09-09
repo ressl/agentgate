@@ -1,5 +1,7 @@
 # 🛡️ mcp-firewall
 
+[![CI](https://github.com/ressl/mcp-firewall/actions/workflows/ci.yml/badge.svg)](https://github.com/ressl/mcp-firewall/actions/workflows/ci.yml)
+
 **The open-source security gateway for AI agents.**
 
 mcp-firewall sits between your MCP client and server, intercepting every tool call with enterprise-grade policy enforcement, real-time threat detection, and compliance-ready audit logging.
@@ -19,6 +21,8 @@ AI agents can now execute tools — read files, run commands, query databases, m
 mcp-firewall is the WAF for AI agents.
 
 ## Quick Start
+
+The reviewed integration is available as the [v0.2.0a1 GitHub prerelease](https://github.com/ressl/mcp-firewall/releases/tag/v0.2.0a1). Download and verify its wheel as described in [release instructions](docs/releases.md); this prerelease is not published to PyPI. See the [changelog](CHANGELOG.md) for changes and experimental recovery limits.
 
 ```bash
 pip install mcp-firewall

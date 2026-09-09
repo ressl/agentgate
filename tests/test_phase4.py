@@ -5,14 +5,16 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-import pytest
-
-from mcp_firewall.audit.signer import AuditSigner
 from mcp_firewall.audit.logger import AuditLogger
-from mcp_firewall.compliance.report import AuditData, generate_dora_report, generate_finma_report, generate_soc2_report
-from mcp_firewall.models import Action, GatewayConfig, ToolCallRequest
-from mcp_firewall.threatfeed.loader import ThreatFeed, ThreatRule
-from mcp_firewall.models import Severity
+from mcp_firewall.audit.signer import AuditSigner
+from mcp_firewall.compliance.report import (
+    AuditData,
+    generate_dora_report,
+    generate_finma_report,
+    generate_soc2_report,
+)
+from mcp_firewall.models import GatewayConfig, Severity, ToolCallRequest
+from mcp_firewall.threatfeed.loader import ThreatFeed
 
 
 def make_request(tool: str = "read_file", args: dict | None = None) -> ToolCallRequest:
@@ -20,6 +22,7 @@ def make_request(tool: str = "read_file", args: dict | None = None) -> ToolCallR
 
 
 # --- Ed25519 Signer ---
+
 
 class TestAuditSigner:
     def test_generate_and_sign(self, tmp_path):
@@ -55,7 +58,7 @@ class TestAuditSigner:
         assert "PUBLIC KEY" in pem
 
     def test_key_file_permissions(self, tmp_path):
-        signer = AuditSigner(key_path=tmp_path / "test.key")
+        AuditSigner(key_path=tmp_path / "test.key")
         key_path = tmp_path / "test.key"
         # Check key file exists and is restricted
         assert key_path.exists()
@@ -63,6 +66,7 @@ class TestAuditSigner:
 
 
 # --- Signed Audit Logger ---
+
 
 class TestSignedAuditLogger:
     def test_signed_entries(self, tmp_path, monkeypatch):
@@ -88,24 +92,55 @@ class TestSignedAuditLogger:
 
 # --- Compliance Reports ---
 
+
 class TestComplianceReports:
     def _create_audit_log(self, tmp_path) -> Path:
         """Create a sample audit log for testing."""
         log_path = tmp_path / "test.audit.jsonl"
         events = [
-            {"timestamp": 1708000000, "agent_id": "claude", "tool_name": "read_file",
-             "decision": "allow", "severity": "info", "stage": "policy"},
-            {"timestamp": 1708000001, "agent_id": "claude", "tool_name": "exec",
-             "decision": "deny", "severity": "high", "stage": "injection",
-             "reason": "Prompt injection detected"},
-            {"timestamp": 1708000002, "agent_id": "cursor", "tool_name": "search",
-             "decision": "allow", "severity": "info", "stage": "policy"},
-            {"timestamp": 1708000003, "agent_id": "claude", "tool_name": "http_post",
-             "decision": "deny", "severity": "critical", "stage": "chain_detector",
-             "reason": "Dangerous tool chain"},
-            {"timestamp": 1708000004, "agent_id": "cursor", "tool_name": "read_file",
-             "decision": "redact", "severity": "medium", "stage": "secret_scanner",
-             "reason": "AWS key redacted"},
+            {
+                "timestamp": 1708000000,
+                "agent_id": "claude",
+                "tool_name": "read_file",
+                "decision": "allow",
+                "severity": "info",
+                "stage": "policy",
+            },
+            {
+                "timestamp": 1708000001,
+                "agent_id": "claude",
+                "tool_name": "exec",
+                "decision": "deny",
+                "severity": "high",
+                "stage": "injection",
+                "reason": "Prompt injection detected",
+            },
+            {
+                "timestamp": 1708000002,
+                "agent_id": "cursor",
+                "tool_name": "search",
+                "decision": "allow",
+                "severity": "info",
+                "stage": "policy",
+            },
+            {
+                "timestamp": 1708000003,
+                "agent_id": "claude",
+                "tool_name": "http_post",
+                "decision": "deny",
+                "severity": "critical",
+                "stage": "chain_detector",
+                "reason": "Dangerous tool chain",
+            },
+            {
+                "timestamp": 1708000004,
+                "agent_id": "cursor",
+                "tool_name": "read_file",
+                "decision": "redact",
+                "severity": "medium",
+                "stage": "secret_scanner",
+                "reason": "AWS key redacted",
+            },
         ]
         with open(log_path, "w") as f:
             for event in events:
@@ -153,6 +188,7 @@ class TestComplianceReports:
 
 
 # --- Threat Feed ---
+
 
 class TestThreatFeed:
     def test_load_builtin_rules(self):

@@ -5,23 +5,23 @@ from __future__ import annotations
 
 import logging
 
-import pytest
-
 from mcp_firewall.models import (
     Action,
     GatewayConfig,
     RuleConfig,
     Severity,
+    ToolCallRequest,
 )
 from mcp_firewall.pipeline.inbound import chain_detector, rate_limiter
 from mcp_firewall.pipeline.inbound.chain_detector import ChainDetector
 from mcp_firewall.pipeline.inbound.policy import PolicyEngine, _arguments_match
 from mcp_firewall.pipeline.inbound.rate_limiter import RateLimiter, _tool_matches_simple
 from mcp_firewall.threatfeed.loader import ThreatRule
-from mcp_firewall.models import ToolCallRequest
 
 
-def make_request(tool: str = "read_file", args: dict | None = None, agent: str = "test-agent") -> ToolCallRequest:
+def make_request(
+    tool: str = "read_file", args: dict | None = None, agent: str = "test-agent"
+) -> ToolCallRequest:
     return ToolCallRequest(tool_name=tool, arguments=args or {}, agent_id=agent)
 
 
@@ -39,6 +39,7 @@ def make_rule(**kwargs) -> ThreatRule:
 
 
 # --- H6: policy glob matching ---
+
 
 class TestPolicyGlobMatching:
     def test_dot_is_escaped(self):
@@ -86,6 +87,7 @@ class TestPolicyGlobMatching:
 
 # --- H6/L7: threat feed rule matching ---
 
+
 class TestThreatRuleGlobs:
     def test_env_glob_does_not_match_venv(self):
         rule = make_rule(match={"arguments": {"path": "*.env"}})
@@ -131,6 +133,7 @@ class TestThreatRuleGlobs:
 
 # --- M3: rate limit rule matching ---
 
+
 class TestRateLimitRuleMatching:
     def make_config(self, rule: RuleConfig) -> GatewayConfig:
         return GatewayConfig(default_action=Action.ALLOW, rules=[rule])
@@ -165,7 +168,7 @@ class TestRateLimitRuleMatching:
         rl = RateLimiter()
         # Calls with non-matching arguments are never limited
         for _ in range(5):
-            assert rl.evaluate(make_request(args={"path": "/tmp/x"}), config) is None
+            assert rl.evaluate(make_request(args={"path": "/tmp/x"}), config) is None  # noqa: S108 - inert path fixture; no temporary I/O
         # Matching arguments hit the limit
         assert rl.evaluate(make_request(args={"path": "/etc/passwd"}), config) is None
         result = rl.evaluate(make_request(args={"path": "/etc/shadow"}), config)
@@ -173,6 +176,7 @@ class TestRateLimitRuleMatching:
 
 
 # --- M6: bounded maps ---
+
 
 class TestBoundedMaps:
     def test_rate_limiter_per_agent_bounded(self, monkeypatch):

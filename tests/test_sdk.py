@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from mcp_firewall.sdk import Gateway
 from mcp_firewall.models import Action, AgentConfig, GatewayConfig, RuleConfig
+from mcp_firewall.sdk import Gateway
 
 
 def make_config(**kwargs) -> GatewayConfig:
@@ -16,14 +16,20 @@ def make_config(**kwargs) -> GatewayConfig:
 class TestGatewayCheck:
     def test_allow_normal_call(self):
         gw = Gateway(config=make_config(default_action=Action.ALLOW))
-        result = gw.check("read_file", {"path": "/tmp/test.txt"})
+        result = gw.check("read_file", {"path": "/tmp/test.txt"})  # noqa: S108 - inert path fixture; no temporary I/O
         assert result.allowed
         assert not result.blocked
 
     def test_block_by_rule(self):
-        config = make_config(rules=[
-            RuleConfig(name="block-ssh", match={"arguments": {"path": "**/.ssh/**"}}, action=Action.DENY),
-        ])
+        config = make_config(
+            rules=[
+                RuleConfig(
+                    name="block-ssh",
+                    match={"arguments": {"path": "**/.ssh/**"}},
+                    action=Action.DENY,
+                ),
+            ]
+        )
         gw = Gateway(config=config)
         # Note: ~/.ssh/id_* itself is already denied earlier by threat feed rule
         # TF-003; use a path the feed does not match to exercise the policy rule.
@@ -59,9 +65,11 @@ class TestGatewayCheck:
         assert result.blocked
 
     def test_agent_rbac_allow(self):
-        config = make_config(agents={"openclaw": AgentConfig(allow=["read", "search"], deny=["exec"])})
+        config = make_config(
+            agents={"openclaw": AgentConfig(allow=["read", "search"], deny=["exec"])}
+        )
         gw = Gateway(config=config)
-        assert gw.check("read", {"path": "/tmp"}, agent="openclaw").allowed
+        assert gw.check("read", {"path": "/tmp"}, agent="openclaw").allowed  # noqa: S108 - inert path fixture; no temporary I/O
         assert gw.check("exec", {"cmd": "ls"}, agent="openclaw").blocked
 
     def test_chain_detection(self):

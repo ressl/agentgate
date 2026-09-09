@@ -37,6 +37,7 @@ class RecordingChannel(AlertChannel):
 
 # --- Threat feed as an inbound pipeline stage ---
 
+
 class TestThreatFeedWiring:
     def test_builtin_rule_denies_call_sync(self):
         runner = PipelineRunner(make_config(default_action=Action.ALLOW))
@@ -70,7 +71,7 @@ class TestThreatFeedWiring:
             "severity: high\n"
             "match:\n"
             "  arguments:\n"
-            "    url: \"*internal-api.corp.local*\"\n"
+            '    url: "*internal-api.corp.local*"\n'
             "action: deny\n"
         )
         config = make_config(default_action=Action.ALLOW)
@@ -130,11 +131,15 @@ class TestThreatFeedWiring:
 
 # --- Alert engine fires on deny decisions ---
 
+
 class TestAlertWiring:
     def deny_config(self, **kwargs) -> GatewayConfig:
-        kwargs.setdefault("rules", [
-            RuleConfig(name="block-exec", tool="exec", action=Action.DENY),
-        ])
+        kwargs.setdefault(
+            "rules",
+            [
+                RuleConfig(name="block-exec", tool="exec", action=Action.DENY),
+            ],
+        )
         return make_config(**kwargs)
 
     def attach_recorder(self, runner: PipelineRunner) -> RecordingChannel:
@@ -227,6 +232,7 @@ class TestAlertWiring:
 
 # --- alerts:/threatFeed: config parsing ---
 
+
 class TestWiringConfigParsing:
     def test_alerts_section_camelcase(self, tmp_path):
         cfg = tmp_path / "mcp-firewall.yaml"
@@ -236,7 +242,7 @@ class TestWiringConfigParsing:
             "  minSeverity: medium\n"
             "  slack:\n"
             "    webhookUrl: https://hooks.slack.com/services/xyz\n"
-            "    channel: \"#sec\"\n"
+            '    channel: "#sec"\n'
             "  webhook:\n"
             "    url: https://siem.example.com/alerts\n"
             "  syslog:\n"
@@ -259,11 +265,7 @@ class TestWiringConfigParsing:
         rules = tmp_path / "rules"
         rules.mkdir()
         cfg = tmp_path / "mcp-firewall.yaml"
-        cfg.write_text(
-            "threatFeed:\n"
-            "  enabled: true\n"
-            f"  feedDir: {rules}\n"
-        )
+        cfg.write_text(f"threatFeed:\n  enabled: true\n  feedDir: {rules}\n")
         config = load_config(cfg)
         assert config.threat_feed.enabled is True
         assert config.threat_feed.feed_dir == str(rules)
@@ -280,12 +282,8 @@ class TestWiringConfigParsing:
     def test_snake_case_keys_still_work(self, tmp_path):
         cfg = tmp_path / "mcp-firewall.yaml"
         cfg.write_text(
-            "alerts:\n"
-            "  enabled: true\n"
-            "  min_severity: low\n"
-            "threat_feed:\n"
-            "  feed_dir: /tmp/rules\n"
+            "alerts:\n  enabled: true\n  min_severity: low\nthreat_feed:\n  feed_dir: /tmp/rules\n"
         )
         config = load_config(cfg)
         assert config.alerts.min_severity == Severity.LOW
-        assert config.threat_feed.feed_dir == "/tmp/rules"
+        assert config.threat_feed.feed_dir == "/tmp/rules"  # noqa: S108 - inert path fixture; no temporary I/O

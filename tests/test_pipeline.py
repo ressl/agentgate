@@ -3,28 +3,28 @@
 from __future__ import annotations
 
 from pathlib import Path
-import tempfile
 
 from mcp_firewall.models import (
     Action,
+    AgentConfig,
     GatewayConfig,
-    PipelineStage,
+    RuleConfig,
     Severity,
     ToolCallRequest,
     ToolCallResponse,
-    RuleConfig,
-    AgentConfig,
 )
-from mcp_firewall.pipeline.inbound.kill_switch import KillSwitch
-from mcp_firewall.pipeline.inbound.injection import InjectionDetector
 from mcp_firewall.pipeline.inbound.egress import EgressControl
+from mcp_firewall.pipeline.inbound.injection import InjectionDetector
+from mcp_firewall.pipeline.inbound.kill_switch import KillSwitch
 from mcp_firewall.pipeline.inbound.policy import PolicyEngine
-from mcp_firewall.pipeline.outbound.secrets import SecretScanner
 from mcp_firewall.pipeline.outbound.pii import PIIDetector
+from mcp_firewall.pipeline.outbound.secrets import SecretScanner
 from mcp_firewall.pipeline.runner import PipelineRunner
 
 
-def make_request(tool: str = "read_file", args: dict | None = None, agent: str = "unknown") -> ToolCallRequest:
+def make_request(
+    tool: str = "read_file", args: dict | None = None, agent: str = "unknown"
+) -> ToolCallRequest:
     return ToolCallRequest(tool_name=tool, arguments=args or {}, agent_id=agent)
 
 
@@ -33,6 +33,7 @@ def make_config(**kwargs) -> GatewayConfig:
 
 
 # --- Kill Switch ---
+
 
 class TestKillSwitch:
     def test_not_activated(self):
@@ -68,6 +69,7 @@ class TestKillSwitch:
 
 
 # --- Injection Detector ---
+
 
 class TestInjectionDetector:
     def test_clean_request(self):
@@ -148,6 +150,7 @@ class TestInjectionDetector:
 
 # --- Egress Control ---
 
+
 class TestEgressControl:
     def test_normal_url(self):
         ec = EgressControl()
@@ -197,7 +200,9 @@ class TestEgressControl:
     def test_embedded_url(self):
         ec = EgressControl()
         result = ec.evaluate(
-            make_request(args={"text": "Check out http://169.254.169.254/latest/meta-data for info"}),
+            make_request(
+                args={"text": "Check out http://169.254.169.254/latest/meta-data for info"}
+            ),
             make_config(),
         )
         assert result is not None
@@ -216,11 +221,18 @@ class TestEgressControl:
 
 # --- Policy Engine ---
 
+
 class TestPolicyEngine:
     def test_deny_rule(self):
-        config = make_config(rules=[
-            RuleConfig(name="block-ssh", match={"arguments": {"path": "**/.ssh/**"}}, action=Action.DENY),
-        ])
+        config = make_config(
+            rules=[
+                RuleConfig(
+                    name="block-ssh",
+                    match={"arguments": {"path": "**/.ssh/**"}},
+                    action=Action.DENY,
+                ),
+            ]
+        )
         pe = PolicyEngine()
         result = pe.evaluate(
             make_request(args={"path": "/home/user/.ssh/id_rsa"}),
@@ -230,9 +242,11 @@ class TestPolicyEngine:
         assert result.action == Action.DENY
 
     def test_allow_rule(self):
-        config = make_config(rules=[
-            RuleConfig(name="allow-reads", tool="read_file", action=Action.ALLOW),
-        ])
+        config = make_config(
+            rules=[
+                RuleConfig(name="allow-reads", tool="read_file", action=Action.ALLOW),
+            ]
+        )
         pe = PolicyEngine()
         result = pe.evaluate(
             make_request(tool="read_file"),
@@ -242,9 +256,13 @@ class TestPolicyEngine:
         assert result.action == Action.ALLOW
 
     def test_tool_pattern(self):
-        config = make_config(rules=[
-            RuleConfig(name="block-shell", tool="shell_exec|run_command|bash", action=Action.DENY),
-        ])
+        config = make_config(
+            rules=[
+                RuleConfig(
+                    name="block-shell", tool="shell_exec|run_command|bash", action=Action.DENY
+                ),
+            ]
+        )
         pe = PolicyEngine()
         result = pe.evaluate(make_request(tool="run_command"), config)
         assert result is not None
@@ -283,16 +301,19 @@ class TestPolicyEngine:
         assert result.action == Action.DENY
 
     def test_first_match_wins(self):
-        config = make_config(rules=[
-            RuleConfig(name="deny-first", tool="read_file", action=Action.DENY),
-            RuleConfig(name="allow-second", tool="read_file", action=Action.ALLOW),
-        ])
+        config = make_config(
+            rules=[
+                RuleConfig(name="deny-first", tool="read_file", action=Action.DENY),
+                RuleConfig(name="allow-second", tool="read_file", action=Action.ALLOW),
+            ]
+        )
         pe = PolicyEngine()
         result = pe.evaluate(make_request(tool="read_file"), config)
         assert result.action == Action.DENY  # First match wins
 
 
 # --- Secret Scanner ---
+
 
 class TestSecretScanner:
     def test_clean_response(self):
@@ -326,7 +347,9 @@ class TestSecretScanner:
         ss = SecretScanner()
         resp = ToolCallResponse(
             request_id="1",
-            content=[{"type": "text", "text": "token: ghp_1234567890abcdefghijABCDEFGHIJ1234567890"}],
+            content=[
+                {"type": "text", "text": "token: ghp_1234567890abcdefghijABCDEFGHIJ1234567890"}
+            ],
         )
         result_resp, decision = ss.scan(resp, make_config())
         assert decision is not None
@@ -354,6 +377,7 @@ class TestSecretScanner:
 
 
 # --- PII Detector ---
+
 
 class TestPIIDetector:
     def test_clean_response(self):
@@ -410,6 +434,7 @@ class TestPIIDetector:
 
 # --- Pipeline Runner ---
 
+
 class TestPipelineRunner:
     def test_clean_request_passes(self):
         config = make_config(default_action=Action.ALLOW)
@@ -443,11 +468,13 @@ class TestPipelineRunner:
 
 # --- Audit Logger ---
 
+
 class TestAuditLogger:
     def test_log_and_verify(self, tmp_path):
         config = make_config()
         config.audit.path = str(tmp_path / "test.audit.jsonl")
         from mcp_firewall.audit.logger import AuditLogger
+
         logger = AuditLogger(config)
 
         # Log a few events
@@ -468,6 +495,7 @@ class TestAuditLogger:
         config = make_config()
         config.audit.path = str(tmp_path / "test.audit.jsonl")
         from mcp_firewall.audit.logger import AuditLogger
+
         logger = AuditLogger(config)
 
         req = make_request()

@@ -8,15 +8,14 @@ import socket
 import threading
 import time
 
-import pytest
 from starlette.testclient import TestClient
 
 from mcp_firewall.dashboard import app as app_module
 from mcp_firewall.dashboard.app import DashboardState, app, state
 from mcp_firewall.dashboard.server import start_dashboard
 
-
 # --- M11: /api/events limit validation ---
+
 
 class TestEventsLimit:
     def test_limit_zero_rejected(self):
@@ -56,6 +55,7 @@ class TestEventsLimit:
 
 
 # --- H7: broadcast scheduled on the dashboard server's loop ---
+
 
 class _FakeWS:
     def __init__(self) -> None:
@@ -132,6 +132,7 @@ class TestCrossThreadBroadcast:
 
 # --- M6: bounded aggregation dicts ---
 
+
 class TestBoundedAggregation:
     def test_by_tool_capped(self, monkeypatch):
         monkeypatch.setattr(app_module, "MAX_AGG_KEYS", 10)
@@ -153,6 +154,7 @@ class TestBoundedAggregation:
 
 # --- L15: port already in use ---
 
+
 class TestServerStartupFailure:
     def test_port_in_use_logs_error_and_thread_exits(self, caplog):
         blocker = socket.socket()
@@ -164,16 +166,14 @@ class TestServerStartupFailure:
                 thread = start_dashboard(port=port)
                 thread.join(timeout=15)
             assert not thread.is_alive()
-            assert any(
-                "Dashboard server failed" in record.message
-                for record in caplog.records
-            )
+            assert any("Dashboard server failed" in record.message for record in caplog.records)
         finally:
             blocker.close()
             state.set_loop(None)
 
 
 # --- H8: dashboard HTML must not interpolate event data via innerHTML ---
+
 
 class TestNoStoredXss:
     def test_no_innerhtml_interpolation(self):
