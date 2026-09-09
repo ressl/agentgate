@@ -6,12 +6,15 @@ import asyncio
 import threading
 import time
 from collections import defaultdict
+from collections.abc import Awaitable, Callable
 from typing import Any
 
-from fastapi import FastAPI, Query, WebSocket, WebSocketDisconnect
-from fastapi.responses import HTMLResponse
+from fastapi import FastAPI, Query, Request, WebSocket, WebSocketDisconnect
+from fastapi.responses import HTMLResponse, Response
 
 from ..models import EventPhase, SecurityEvent
+from .approval_ui import APPROVAL_HTML, APPROVAL_SCRIPT
+from .approvals import router as approval_router
 
 # Cap for the by_* aggregation dicts: tool and agent names are
 # attacker-controlled, so the number of distinct keys must stay bounded.
@@ -143,6 +146,21 @@ class DashboardState:
 state = DashboardState()
 
 app = FastAPI(title="mcp-firewall Dashboard", docs_url=None, redoc_url=None)
+app.include_router(approval_router)
+
+
+@app.middleware("http")
+async def security_headers(
+    request: Request,
+    call_next: Callable[[Request], Awaitable[Response]],
+) -> Response:
+    response = await call_next(request)
+    response.headers["X-Frame-Options"] = "DENY"
+    response.headers["Content-Security-Policy"] = "frame-ancestors 'none'; base-uri 'none'"
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    if request.url.path.startswith("/api/approval"):
+        response.headers["Cache-Control"] = "no-store"
+    return response
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -382,6 +400,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     <div class="value " id="stat-uptime">0</div>
   </div>
 </div>
+<!-- APPROVAL_CONTROLS -->
 <div class="feed">
   <h2>Live Event Feed</h2>
   <div class="event-list" id="events"></div>
@@ -477,3 +496,7 @@ connectWS();
 </script>
 </body>
 </html>"""
+
+DASHBOARD_HTML = DASHBOARD_HTML.replace("<!-- APPROVAL_CONTROLS -->", APPROVAL_HTML).replace(
+    "</body>", APPROVAL_SCRIPT + "</body>"
+)

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import threading
 import time
 from pathlib import Path
 
@@ -10,6 +11,7 @@ from ..alerts.engine import AlertChannel, AlertEngine
 from ..alerts.slack import SlackChannel
 from ..alerts.syslog import SyslogChannel
 from ..alerts.webhook import WebhookChannel
+from ..approvals import ApprovalBroker
 from ..audit.logger import AuditLogger
 from ..events import DeliveryStats, EventEmitter, EventHandler
 from ..models import (
@@ -74,6 +76,7 @@ class PipelineRunner:
         *,
         event_handler: EventHandler | None = None,
         event_observer: EventHandler | None = None,
+        approval_broker: ApprovalBroker | None = None,
     ) -> None:
         self.config = config
         self.audit = AuditLogger(config)
@@ -92,6 +95,8 @@ class PipelineRunner:
         self._approval = HumanApproval(
             auto_approve=auto_approve,
             stdin_available=stdin_available,
+            approval_broker=approval_broker,
+            session_id=self.events.session_id,
         )
 
         # Alert engine: fires on deny/alert decisions (None when alerts are disabled)
@@ -146,17 +151,29 @@ class PipelineRunner:
         self.events.emit(request, phase, decision)
         return decision
 
-    def evaluate_inbound(self, request: ToolCallRequest) -> PipelineDecision | None:
+    def evaluate_inbound(
+        self,
+        request: ToolCallRequest,
+        *,
+        cancel_event: threading.Event | None = None,
+    ) -> PipelineDecision | None:
         self.events.emit(request, EventPhase.REQUEST_RECEIVED)
         try:
-            return self._finish_inbound(request, self._evaluate_inbound(request))
+            return self._finish_inbound(
+                request, self._evaluate_inbound(request, cancel_event=cancel_event)
+            )
         except BaseException:
             self.events.emit(
                 request, EventPhase.REQUEST_UNKNOWN, reason="Admission did not complete"
             )
             raise
 
-    def _evaluate_inbound(self, request: ToolCallRequest) -> PipelineDecision | None:
+    def _evaluate_inbound(
+        self,
+        request: ToolCallRequest,
+        *,
+        cancel_event: threading.Event | None = None,
+    ) -> PipelineDecision | None:
         """Run all inbound stages. Returns first blocking decision."""
         start = time.time()
         logged = False
@@ -183,7 +200,7 @@ class PipelineRunner:
 
             if decision.action == Action.PROMPT:
                 # Run human approval
-                approval = self._approval.evaluate(request, self.config)
+                approval = self._approval.evaluate(request, self.config, cancel_event=cancel_event)
                 latency = (time.time() - start) * 1000
                 self._audit_decision(request, approval, latency)
                 logged = True
@@ -348,7 +365,11 @@ class PipelineRunner:
         self._alerts = alerts
         self._threat_feed.feed = feed
 
+    def cancel_pending_approvals(self) -> None:
+        self._approval.close()
+
     def close(self) -> DeliveryStats:
+        self.cancel_pending_approvals()
         if self._alerts is not None:
             self._alerts.close()
         return self.events.close()

@@ -8,13 +8,24 @@ import threading
 
 import uvicorn
 
+from ..approvals import ApprovalBroker
 from .app import app, state
+from .approvals import LOOPBACK_HOSTS, configure_approvals
 
 logger = logging.getLogger("mcp_firewall.dashboard")
 
 
-def start_dashboard(host: str = "127.0.0.1", port: int = 9090) -> threading.Thread:
+def start_dashboard(
+    host: str = "127.0.0.1",
+    port: int = 9090,
+    *,
+    approval_broker: ApprovalBroker | None = None,
+    token: str | None = None,
+) -> threading.Thread:
     """Start the dashboard in a background thread."""
+    if approval_broker is not None and host not in LOOPBACK_HOSTS:
+        raise ValueError("Approval dashboard must bind to loopback")
+    configure_approvals(approval_broker, token)
     config = uvicorn.Config(app, host=host, port=port, log_level="warning")
     server = uvicorn.Server(config)
 
@@ -37,6 +48,8 @@ def start_dashboard(host: str = "127.0.0.1", port: int = 9090) -> threading.Thre
                 exc,
             )
         finally:
+            if approval_broker is not None:
+                approval_broker.disconnect()
             state.set_loop(None)
 
     thread = threading.Thread(target=_run, daemon=True, name="mcp-firewall-dashboard")

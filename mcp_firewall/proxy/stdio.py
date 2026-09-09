@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import signal
 import sys
 from collections.abc import AsyncIterator
@@ -12,6 +13,7 @@ from typing import Any
 from pydantic import ValidationError
 from rich.console import Console
 
+from ..approvals import ApprovalBroker
 from ..dashboard.app import state as dashboard_state
 from ..models import Action, EventPhase, GatewayConfig, ToolCallRequest, ToolCallResponse
 from ..pipeline.outbound.content import ResponseContentError
@@ -21,6 +23,22 @@ from ..pipeline.runner import PipelineRunner
 MAX_MESSAGE_SIZE = 10 * 1024 * 1024  # 10 MB
 MAX_PENDING_REQUESTS = 1000
 MAX_PENDING_BYTES = 10 * 1024 * 1024
+
+
+class _ClientProtocol(asyncio.StreamReaderProtocol):
+    """Notice client EOF even while admission is waiting for a human decision."""
+
+    def __init__(self, reader: asyncio.StreamReader, pipeline: PipelineRunner) -> None:
+        super().__init__(reader)
+        self._pipeline = pipeline
+
+    def eof_received(self) -> bool | None:
+        self._pipeline.cancel_pending_approvals()
+        return super().eof_received()
+
+    def connection_lost(self, exc: Exception | None) -> None:
+        self._pipeline.cancel_pending_approvals()
+        super().connection_lost(exc)
 
 
 class StdioProxy:
@@ -34,14 +52,21 @@ class StdioProxy:
     the outbound pipeline, and returns (possibly modified) responses to the client.
     """
 
-    def __init__(self, config: GatewayConfig, console: Console | None = None) -> None:
+    def __init__(
+        self,
+        config: GatewayConfig,
+        console: Console | None = None,
+        *,
+        approval_broker: ApprovalBroker | None = None,
+    ) -> None:
         self.config = config
         # stdin is the JSON-RPC protocol channel here — interactive approval
-        # prompts are impossible, so approval requests fail closed.
+        # prompts are impossible; approval requires an explicitly supplied broker.
         self.pipeline = PipelineRunner(
             config,
             stdin_available=False,
             event_observer=dashboard_state.add_security_event,
+            approval_broker=approval_broker,
         )
         self.console = console or Console(stderr=True)
         self._server_proc: asyncio.subprocess.Process | None = None
@@ -63,6 +88,8 @@ class StdioProxy:
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
+            # The wrapped server must never inherit the controller credential.
+            env={k: v for k, v in os.environ.items() if k != "MCP_FIREWALL_DASHBOARD_TOKEN"},
         )
         client = asyncio.create_task(self._proxy_client_to_server())
         server = asyncio.create_task(self._proxy_server_to_client())
@@ -89,6 +116,7 @@ class StdioProxy:
         except asyncio.CancelledError:
             pass
         finally:
+            self.pipeline.cancel_pending_approvals()
             for task in tasks:
                 if not task.done():
                     task.cancel()
@@ -146,7 +174,7 @@ class StdioProxy:
             raise RuntimeError("Server stdin is unavailable")
         writer = self._server_proc.stdin
         reader = asyncio.StreamReader()
-        protocol = asyncio.StreamReaderProtocol(reader)
+        protocol = _ClientProtocol(reader, self.pipeline)
         transport, _ = await asyncio.get_running_loop().connect_read_pipe(
             lambda: protocol, sys.stdin.buffer
         )

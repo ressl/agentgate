@@ -14,6 +14,7 @@ from pathlib import Path
 from types import TracebackType
 from typing import Any
 
+from .approvals import ApprovalBroker
 from .audit.logger import AuditLogger
 from .config import load_config
 from .events import DeliveryStats, EventHandler
@@ -90,7 +91,11 @@ class Gateway:
         auto_approve: bool = False,
         *,
         event_handler: EventHandler | None = None,
+        approval_broker: ApprovalBroker | None = None,
     ) -> None:
+        if auto_approve and approval_broker is not None:
+            raise ValueError("auto_approve cannot be combined with an approval broker")
+        self._approval_broker = approval_broker
         if config is not None and config_path is not None:
             raise ValueError("Pass config or config_path, not both")
         self._config_path = config_path
@@ -104,6 +109,7 @@ class Gateway:
             auto_approve=auto_approve,
             stdin_available=False,
             event_handler=event_handler,
+            approval_broker=approval_broker,
         )
 
     def _ensure_open(self) -> None:
@@ -116,6 +122,15 @@ class Gateway:
         arguments: dict[str, Any] | None = None,
         agent: str = "default",
     ) -> CheckResult:
+        return self._check(tool_name, arguments, agent)
+
+    def _check(
+        self,
+        tool_name: str,
+        arguments: dict[str, Any] | None,
+        agent: str,
+        cancel_event: threading.Event | None = None,
+    ) -> CheckResult:
         with self._lock:
             self._ensure_open()
             request = ToolCallRequest(
@@ -123,7 +138,7 @@ class Gateway:
                 arguments=arguments or {},
                 agent_id=agent,
             ).model_copy(deep=True)
-            decision = self._pipeline.evaluate_inbound(request)
+            decision = self._pipeline.evaluate_inbound(request, cancel_event=cancel_event)
             blocked = decision is not None and decision.action == Action.DENY
             context = CallContext(
                 session_id=self._pipeline.events.session_id,
@@ -148,7 +163,14 @@ class Gateway:
         arguments: dict[str, Any] | None = None,
         agent: str = "default",
     ) -> CheckResult:
-        return await asyncio.to_thread(self.check, tool_name, arguments, agent)
+        cancel_event = threading.Event()
+        try:
+            return await asyncio.to_thread(self._check, tool_name, arguments, agent, cancel_event)
+        except asyncio.CancelledError:
+            cancel_event.set()
+            if self._approval_broker is not None:
+                self._approval_broker.wake()
+            raise
 
     def _response_request(
         self,
@@ -289,8 +311,11 @@ class Gateway:
         return self._pipeline.events.stats
 
     def close(self) -> DeliveryStats:
+        # A pending check owns the policy lock: wake it before waiting for that lock.
+        self._closed = True
+        self._pipeline.cancel_pending_approvals()
         with self._lock:
-            self._closed = True
+            pass  # Wait for the current policy operation to finish.
         return self._pipeline.close()
 
     async def aclose(self) -> DeliveryStats:
