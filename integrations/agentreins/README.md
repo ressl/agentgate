@@ -2,7 +2,7 @@
 
 Connect AgentReins to the existing local mcp-firewall controller. The adapter adds
 an **MCP Firewall** toolbar button with native **Connect**, **Allow once**, **Deny**
-and **Disconnect** controls. Sanitized lifecycle events enter AgentReins' actual
+and **Disconnect** controls, plus optional workspace snapshot review and file restore. Sanitized lifecycle events enter AgentReins' actual
 `GuardEvent`/`EventStore` flow and a dedicated evidence view.
 
 This directory contains our adapter sources and a checked installer. It does not
@@ -83,10 +83,31 @@ The test verifies:
   user turn, workspace path, process identity or recovery evidence.
 - Replaying a consumed approval fails; hard policy denial and user denial never forward.
 - Explicit disconnect and abrupt controller loss deny pending calls.
+- Snapshot diffs, native single-file restore, replay rejection and later-edit conflicts
+  use the actual proxy workspace; file content never enters projected events.
 - Redirects and oversized HTTP responses are rejected; malformed schemas and cursors fail.
 
 Running `swift test` alone skips the two live tests because their private fixture
 addresses and credentials are supplied only by `verify.py`.
+
+## Native snapshot practice test
+
+Enable `--snapshot-workspace /absolute/project` alongside `--dashboard-approvals`
+to capture admitted calls and review individual file changes. See the
+[setup, boundaries and API](../../docs/workspace-rollback.md) before use: snapshots
+are bounded and live only as long as the proxy; external writers must be paused
+for restore. File diffs contain sensitive local content and are not redacted.
+
+To exercise the actual native view with synthetic files and no OS/history monitors:
+
+```sh
+python integrations/agentreins/demo.py ../AgentReins-firewall --snapshots
+```
+
+Use its printed local URL and fixture-only token. Enter `write` in the terminal,
+allow it in the app, inspect its diff, and confirm restore. Repeat with `edit-user`
+after opening the next diff to demonstrate conflict protection. Enter `quit` to
+clean up. Never use the public demo credential with a real workspace.
 
 ## Evidence and control boundaries
 
@@ -111,8 +132,10 @@ remain transient and are not recorded in `EventStore`.
 Permission observations are intermediate decisions. A response block can occur
 *after* side effects. Neither a passed response nor a captured protocol result
 proves successful execution, file changes, or safe rollback. This adapter does not
-feed observations into AgentReins' recovery executor. Snapshots and transactional
-rollback remain a separate follow-up stage. Stdio admission is still sequential:
+feed observations into AgentReins' recovery executor. The optional
+[workspace snapshot controller](../../docs/workspace-rollback.md) independently observes
+file changes and provides explicitly confirmed single-file restore with conflict checks.
+It does not provide a multi-file transaction or automatic rollback. Stdio admission is still sequential:
 queued MCP cancellation notifications wait behind approval, while client EOF and
 SDK cancellation cancel pending approvals immediately.
 
@@ -123,8 +146,8 @@ running under the same macOS account.
 
 ## Verified on 2026-09-09
 
-- Python 3.11 and 3.14: 434 firewall tests passed.
-- Swift 6.3.3 on arm64 macOS: all eight adapter tests passed, including both live tests.
+- Python 3.11 and 3.14: 475 firewall tests passed.
+- Swift 6.3.3 on arm64 macOS: all nine adapter tests passed, including both live tests.
 - The 18 existing AgentReins tests passed. The full Swift suite skips the two live
   tests when fixture environment variables are absent; `verify.py` executes them.
 - Fresh-checkout installation and full AgentReins compilation passed.
@@ -132,7 +155,13 @@ running under the same macOS account.
   installed-wheel check passed. The archive includes Swift sources; the wheel retains
   the firewall modules and bundled threat rules.
 
-These are automated development checks, including the native controller logic.
+The isolated native demo was also operated through its real SwiftUI controls:
+Connect, Allow once, Deny, Disconnect, Close, diff review, confirmed file restore,
+later-edit conflict and confirmed discard. The restored bytes and preserved later
+edit were checked directly in the synthetic workspace. Snapshot rows include time
+and a call-ID prefix to distinguish repeated calls.
+
 The full monitoring app was compiled but not launched against personal agent histories.
-No AgentReins upstream release, notarized app distribution or filesystem recovery
-integration is claimed.
+No AgentReins upstream release or notarized app distribution is claimed. Recovery
+is bounded and per file; persistent backups and multi-file transactions remain out
+of scope.

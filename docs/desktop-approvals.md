@@ -59,7 +59,8 @@ cancels a pending approval. SDK task cancellation is also supported.
 This control channel assumes a trusted local operator and trusted same-user processes.
 It does not isolate a malicious process running under the operator's OS account.
 A [native AgentReins adapter](../integrations/agentreins/README.md) uses this control
-channel. Filesystem snapshots and a rollback executor remain separate work.
+channel. Optional [workspace snapshots](workspace-rollback.md) provide separately
+confirmed single-file recovery; automatic and multi-file rollback are not included.
 
 ## Embed the broker
 
@@ -120,3 +121,10 @@ Decision bodies must be JSON, at most 1024 bytes, with exactly these fields:
 return 400, invalid authentication 401, foreign origins/hosts 403, disabled control
 404, stale/changed/mismatched decisions 409, oversized bodies 413, and unsupported
 content types 415. A 409 never approves a call; fetch the current pending list.
+
+## Optional workspace snapshots
+
+Use `--snapshot-workspace /absolute/project` with dashboard approvals to enable
+[bounded workspace snapshots and single-file recovery](workspace-rollback.md).
+Native review is available in the AgentReins adapter. Snapshots are process-local;
+restores require unchanged post-capture files and paused external writers.

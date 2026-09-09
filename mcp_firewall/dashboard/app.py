@@ -16,6 +16,7 @@ from ..models import EventPhase, SecurityEvent
 from .approval_ui import APPROVAL_HTML, APPROVAL_SCRIPT
 from .approvals import router as approval_router
 from .event_feed import record_integration_event
+from .workspace import router as workspace_router
 
 # Cap for the by_* aggregation dicts: tool and agent names are
 # attacker-controlled, so the number of distinct keys must stay bounded.
@@ -149,6 +150,7 @@ state = DashboardState()
 
 app = FastAPI(title="mcp-firewall Dashboard", docs_url=None, redoc_url=None)
 app.include_router(approval_router)
+app.include_router(workspace_router)
 
 
 @app.middleware("http")
@@ -162,6 +164,7 @@ async def security_headers(
     response.headers["X-Content-Type-Options"] = "nosniff"
     if (
         request.url.path.startswith("/api/approval")
+        or request.url.path.startswith("/api/workspace")
         or request.url.path == "/api/integration-events"
     ):
         response.headers["Cache-Control"] = "no-store"

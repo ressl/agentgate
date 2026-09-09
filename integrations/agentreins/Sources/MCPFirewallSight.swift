@@ -11,6 +11,11 @@ final class MCPFirewallSight: ObservableObject {
     @Published private(set) var deciding: Set<UUID> = []
     @Published private(set) var evidenceGap = false
     @Published private(set) var status = "Disconnected. Calls requiring approval are denied."
+    @Published private(set) var workspace: MCPFirewallWorkspace?
+    @Published private(set) var workspaceDetail: MCPFirewallSnapshot?
+    @Published private(set) var filePreview: MCPFirewallFilePreview?
+    @Published private(set) var workspaceStatus = ""
+    @Published private(set) var workspaceWorking = false
     var onEvents: (([GuardEvent]) -> Void)?
 
     private var client: MCPFirewallClient?
@@ -48,6 +53,8 @@ final class MCPFirewallSight: ObservableObject {
             apply(page)
             pending = requests
             connected = true
+            await refreshWorkspace()
+            guard generation == version else { return }
             status = "Connected. Review each call before allowing it once."
             pollTask = Task { [weak self] in
                 while !Task.isCancelled {
@@ -76,6 +83,7 @@ final class MCPFirewallSight: ObservableObject {
                 apply(page)
                 if !page.has_more { break }
             }
+            await refreshWorkspace()
         } catch {
             if generation == version { await disconnect(message: Self.message(error)) }
         }
@@ -136,8 +144,87 @@ final class MCPFirewallSight: ObservableObject {
         connecting = false
         pending = []
         deciding = []
+        workspace = nil
+        workspaceDetail = nil
+        filePreview = nil
+        workspaceWorking = false
+        workspaceStatus = ""
         status = message
         await old?.disconnect()
+    }
+
+    func refreshWorkspace() async {
+        guard let client, connected else { return }
+        let version = generation
+        do {
+            let value = try await client.workspace()
+            guard generation == version else { return }
+            workspace = value
+        } catch {
+            if generation == version { workspaceStatus = "Workspace snapshots unavailable. Refresh to retry." }
+        }
+    }
+
+    func inspect(_ snapshot: MCPFirewallSnapshot, file: MCPFirewallFileChange? = nil) async {
+        guard let client, connected, !workspaceWorking else { return }
+        let version = generation
+        workspaceWorking = true
+        filePreview = nil
+        defer { if generation == version { workspaceWorking = false } }
+        do {
+            if let file {
+                let value = try await client.preview(snapshot, file: file)
+                guard generation == version else { return }
+                filePreview = value
+            } else {
+                let value = try await client.snapshot(snapshot.id)
+                guard generation == version else { return }
+                workspaceDetail = value
+            }
+            workspaceStatus = ""
+        } catch {
+            if generation == version { workspaceStatus = "Snapshot changed or unavailable. Review it again." }
+        }
+    }
+
+    func restoreFile(_ preview: MCPFirewallFilePreview) async {
+        guard let client, connected, !workspaceWorking, workspace?.busy == false,
+              filePreview?.revision == preview.revision, filePreview?.file_id == preview.file_id else { return }
+        let version = generation
+        workspaceWorking = true
+        defer { if generation == version { workspaceWorking = false } }
+        do {
+            let value = try await client.restore(preview)
+            guard generation == version else { return }
+            workspaceDetail = value
+            filePreview = nil
+            workspaceStatus = "Selected file restored. Other files were not restored."
+        } catch {
+            guard generation == version else { return }
+            filePreview = nil
+            if case MCPFirewallError.http(409) = error {
+                workspaceStatus = "Restore conflict: file, parent or snapshot changed. Inspect the workspace before retrying."
+            } else {
+                workspaceStatus = "Restore result unknown. Inspect the file before retrying."
+            }
+        }
+        await refreshWorkspace()
+    }
+
+    func discardSnapshot(_ snapshot: MCPFirewallSnapshot) async {
+        guard let client, connected, !workspaceWorking else { return }
+        let version = generation
+        workspaceWorking = true
+        defer { if generation == version { workspaceWorking = false } }
+        do {
+            try await client.discard(snapshot)
+            guard generation == version else { return }
+            if workspaceDetail?.id == snapshot.id { workspaceDetail = nil; filePreview = nil }
+            workspaceStatus = "Snapshot discarded. Its recovery bytes have been released."
+        } catch {
+            if generation == version { workspaceStatus = "Discard not confirmed. Refresh and review the snapshot." }
+        }
+        await refreshWorkspace()
     }
 
     private static func message(_ error: Error) -> String {

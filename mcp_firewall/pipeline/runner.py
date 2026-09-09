@@ -138,6 +138,14 @@ class PipelineRunner:
         )
         self.audit.log(request, decision, latency, security_event=event)
 
+    def deny_before_forward(self, request: ToolCallRequest, decision: PipelineDecision) -> None:
+        """Record an additional transport admission refusal after policy checks."""
+        if decision.action != Action.DENY:
+            raise ValueError("A pre-forward refusal must be a deny decision")
+        self._audit_decision(request, decision, 0.0)
+        self._fire_alerts(request, decision)
+        self._finish_inbound(request, decision)
+
     def _finish_inbound(
         self,
         request: ToolCallRequest,
