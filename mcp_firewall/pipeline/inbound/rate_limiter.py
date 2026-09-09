@@ -3,12 +3,10 @@
 from __future__ import annotations
 
 import fnmatch
-import time
 import threading
+import time
 from collections import defaultdict
 
-from ..base import InboundStage
-from .policy import _arguments_match
 from ...models import (
     GatewayConfig,
     PipelineDecision,
@@ -16,6 +14,8 @@ from ...models import (
     Severity,
     ToolCallRequest,
 )
+from ..base import InboundStage
+from .policy import _arguments_match
 
 # Hard cap on per-key sliding windows (keys may be attacker-controlled)
 _MAX_WINDOWS = 10_000
@@ -98,7 +98,9 @@ class RateLimiter(InboundStage):
                 if arg_matchers and not _arguments_match(request.arguments, arg_matchers):
                     continue
                 max_calls = rule.rate_limit.get("maxCalls", rule.rate_limit.get("max_calls", 0))
-                window = rule.rate_limit.get("windowSeconds", rule.rate_limit.get("window_seconds", 60))
+                window = rule.rate_limit.get(
+                    "windowSeconds", rule.rate_limit.get("window_seconds", 60)
+                )
                 if max_calls > 0:
                     key = f"rule:{rule.name}:{request.tool_name}"
                     window_obj = _get_window(self._per_tool, key)
@@ -112,9 +114,12 @@ class RateLimiter(InboundStage):
                     window_obj.add(now)
 
         # Record this call
-        self._global.add(now)
-        if request.agent_id != "unknown":
+        if config.rate_limit.max_calls > 0:
+            self._global.add(now)
+        if agent_cfg and agent_cfg.rate_limit and _parse_rate_limit(agent_cfg.rate_limit)[0] > 0:
             _get_window(self._per_agent, request.agent_id).add(now)
+        else:
+            self._per_agent.pop(request.agent_id, None)
 
         return None
 

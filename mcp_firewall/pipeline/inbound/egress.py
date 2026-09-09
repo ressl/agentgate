@@ -4,9 +4,10 @@ from __future__ import annotations
 
 import ipaddress
 import re
+from socket import SOCK_STREAM, gaierror, getaddrinfo
+from typing import Any
 from urllib.parse import urlparse
 
-from ..base import InboundStage
 from ...models import (
     GatewayConfig,
     PipelineDecision,
@@ -14,6 +15,7 @@ from ...models import (
     Severity,
     ToolCallRequest,
 )
+from ..base import InboundStage
 
 # Cloud metadata endpoints
 CLOUD_METADATA = {
@@ -29,9 +31,7 @@ DANGEROUS_SCHEMES = {"file", "gopher", "dict", "ftp", "ldap"}
 # All schemes the egress control knows how to handle
 _URL_SCHEMES = ("http://", "https://", "file://", "ftp://", "gopher://", "dict://", "ldap://")
 
-_URL_PATTERN = re.compile(
-    r"(?:https?|file|ftp|gopher|dict|ldap)://[^\s\"'<>]+", re.IGNORECASE
-)
+_URL_PATTERN = re.compile(r"(?:https?|file|ftp|gopher|dict|ldap)://[^\s\"'<>]+", re.IGNORECASE)
 _HOST_PATTERN = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?")
 
 # Maximum recursion depth when walking nested arguments
@@ -48,15 +48,17 @@ class EgressControl(InboundStage):
             return None
 
         # Extract all URL-like values from arguments
-        urls = _extract_urls(request.arguments)
+        try:
+            urls = _extract_urls(request.arguments)
+        except ValueError:
+            return self._deny("Arguments exceed egress inspection depth", severity=Severity.HIGH)
 
         for url_str in urls:
             try:
                 parsed = urlparse(url_str)
-            except Exception:
-                continue
-
-            hostname = parsed.hostname or ""
+                hostname = (parsed.hostname or "").lower().rstrip(".")
+            except ValueError:
+                return self._deny("Invalid destination URL", severity=Severity.HIGH)
 
             # Check dangerous schemes
             if parsed.scheme.lower() in DANGEROUS_SCHEMES:
@@ -69,10 +71,45 @@ class EgressControl(InboundStage):
             # Resolve IP, normalizing non-canonical IPv4 forms (short, octal, hex)
             ip = _resolve_ip(hostname)
 
+            if config.egress.block_private_ips and (
+                hostname == "localhost" or hostname.endswith(".localhost")
+            ):
+                return self._deny("Localhost destination blocked", severity=Severity.HIGH)
+
+            addresses = [ip] if ip is not None else []
+            if (
+                hostname
+                and ip is None
+                and (config.egress.block_private_ips or config.egress.block_cloud_metadata)
+                and hostname not in CLOUD_METADATA
+            ):
+                try:
+                    addresses = [
+                        ipaddress.ip_address(info[4][0])
+                        for info in getaddrinfo(hostname, None, type=SOCK_STREAM)
+                    ]
+                except (gaierror, OSError, ValueError):
+                    return self._deny(
+                        f"Cannot verify destination addresses for {hostname}",
+                        severity=Severity.HIGH,
+                    )
+                if not addresses:
+                    return self._deny(
+                        "Destination resolved to no addresses", severity=Severity.HIGH
+                    )
+
             # Check cloud metadata
             if config.egress.block_cloud_metadata and (
                 hostname in CLOUD_METADATA
-                or (ip is not None and str(ip) in CLOUD_METADATA)
+                or any(
+                    str(
+                        address.ipv4_mapped
+                        if isinstance(address, ipaddress.IPv6Address) and address.ipv4_mapped
+                        else address
+                    )
+                    in CLOUD_METADATA
+                    for address in addresses
+                )
             ):
                 return self._deny(
                     f"Cloud metadata endpoint blocked: {hostname}",
@@ -82,11 +119,19 @@ class EgressControl(InboundStage):
 
             # Check private IPs
             if config.egress.block_private_ips:
-                if ip is not None and (ip.is_private or ip.is_loopback or ip.is_link_local):
+                private = next(
+                    (
+                        address
+                        for address in addresses
+                        if (address.is_private or address.is_loopback or address.is_link_local)
+                    ),
+                    None,
+                )
+                if private is not None:
                     return self._deny(
                         f"Private/internal IP blocked: {hostname}",
                         severity=Severity.HIGH,
-                        details={"url": url_str[:200], "ip": str(ip)},
+                        details={"url": url_str[:200], "ip": str(private)},
                     )
 
                 # Check for numeric IP obfuscation (decimal, hex, octal)
@@ -100,17 +145,34 @@ class EgressControl(InboundStage):
         return None
 
 
-def _extract_urls(args: dict, depth: int = 0) -> list[str]:
+def _extract_urls(args: dict[str, Any], depth: int = 0) -> list[str]:
     """Extract URL-like strings from arguments."""
     urls: list[str] = []
-    for value in args.values():
-        urls.extend(_extract_from_value(value, depth))
+    for key, value in args.items():
+        urls.extend(
+            _extract_from_value(
+                value,
+                depth,
+                str(key).lower()
+                in {
+                    "host",
+                    "hosts",
+                    "hostname",
+                    "address",
+                    "server",
+                    "endpoint",
+                    "url",
+                    "urls",
+                    "uri",
+                },
+            )
+        )
     return urls
 
 
-def _extract_from_value(value: object, depth: int) -> list[str]:
+def _extract_from_value(value: object, depth: int, network_field: bool = False) -> list[str]:
     if depth > _MAX_DEPTH:
-        return []
+        raise ValueError("Arguments exceed egress inspection depth")
 
     if isinstance(value, str):
         urls: list[str] = []
@@ -120,7 +182,13 @@ def _extract_from_value(value: object, depth: int) -> list[str]:
         # URLs embedded in text
         urls.extend(_URL_PATTERN.findall(value))
         # Bare IP or hostname without a scheme
-        if _looks_like_host(value):
+        host = value.strip("[]").lower().rstrip(".")
+        literal = _resolve_ip(host)
+        if literal is not None and (":" in host or "." in host or _looks_like_host(host)):
+            urls.append(f"//[{host}]" if ":" in host else f"//{host}")
+        elif host in CLOUD_METADATA or host == "localhost" or host.endswith(".localhost"):
+            urls.append(f"//{host}")
+        elif network_field and (_HOST_PATTERN.fullmatch(host) or ":" in value):
             urls.append(f"//{value}")
         return urls
 
@@ -130,7 +198,7 @@ def _extract_from_value(value: object, depth: int) -> list[str]:
     if isinstance(value, (list, tuple)):
         urls = []
         for item in value:
-            urls.extend(_extract_from_value(item, depth + 1))
+            urls.extend(_extract_from_value(item, depth + 1, network_field))
         return urls
 
     return []

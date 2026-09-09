@@ -2,19 +2,17 @@
 
 from __future__ import annotations
 
-import os
 import signal
 from pathlib import Path
 
-from ..base import InboundStage
 from ...models import (
-    Action,
     GatewayConfig,
     PipelineDecision,
     PipelineStage,
     Severity,
     ToolCallRequest,
 )
+from ..base import InboundStage
 
 
 class KillSwitch(InboundStage):

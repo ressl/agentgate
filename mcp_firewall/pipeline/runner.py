@@ -2,37 +2,42 @@
 
 from __future__ import annotations
 
+import asyncio
 import time
 from pathlib import Path
 
-from ..models import (
-    Action,
-    GatewayConfig,
-    PipelineDecision,
-    ToolCallRequest,
-    ToolCallResponse,
-)
 from ..alerts.engine import AlertChannel, AlertEngine
 from ..alerts.slack import SlackChannel
 from ..alerts.syslog import SyslogChannel
 from ..alerts.webhook import WebhookChannel
 from ..audit.logger import AuditLogger
+from ..models import (
+    Action,
+    GatewayConfig,
+    PipelineDecision,
+    PipelineStage,
+    Severity,
+    ToolCallRequest,
+    ToolCallResponse,
+)
 from ..threatfeed.loader import ThreatFeed
-from .inbound.kill_switch import KillSwitch
-from .inbound.injection import InjectionDetector
+from .inbound.chain_detector import ChainDetector
 from .inbound.egress import EgressControl
+from .inbound.human_approval import HumanApproval
+from .inbound.injection import InjectionDetector
+from .inbound.kill_switch import KillSwitch
+from .inbound.policy import PolicyEngine
 from .inbound.rate_limiter import RateLimiter
 from .inbound.threat_feed import ThreatFeedStage
-from .inbound.policy import PolicyEngine
-from .inbound.chain_detector import ChainDetector
-from .inbound.human_approval import HumanApproval
-from .outbound.secrets import SecretScanner
 from .outbound.pii import PIIDetector
+from .outbound.secrets import SecretScanner
 
 
 def _build_threat_feed(config: GatewayConfig) -> ThreatFeed:
     """Load built-in threat feed rules plus any custom rules directory."""
     feed = ThreatFeed()
+    if not config.threat_feed.enabled:
+        return feed
     builtin_dir = Path(__file__).parent.parent / "threatfeed" / "rules"
     feed.load_directory(builtin_dir)
     if config.threat_feed.feed_dir:
@@ -110,6 +115,7 @@ class PipelineRunner:
         """Run all inbound stages. Returns first blocking decision."""
         start = time.time()
         logged = False
+        allowed_decision = None
 
         for stage in self.inbound_stages:
             decision = stage.evaluate(request, self.config)
@@ -143,24 +149,38 @@ class PipelineRunner:
                 continue
 
             if decision.action == Action.ALLOW:
-                # Explicit allow from policy, skip remaining stages
-                latency = (time.time() - start) * 1000
-                self.audit.log(request, decision, latency)
-                return None
+                # Policy permission does not bypass subsequent security stages.
+                allowed_decision = decision
+                continue
 
         # All stages passed — don't log twice if approval was already logged
         if not logged:
             latency = (time.time() - start) * 1000
-            self.audit.log(request, None, latency)
+            self.audit.log(request, allowed_decision, latency)
         return None
 
     async def aevaluate_inbound(self, request: ToolCallRequest) -> PipelineDecision | None:
         """Async variant of evaluate_inbound — approval runs off the event loop."""
         start = time.time()
         logged = False
+        allowed_decision = None
 
         for stage in self.inbound_stages:
-            decision = stage.evaluate(request, self.config)
+            if stage is self._egress:
+                # DNS uses the system resolver; keep it off the protocol loop.
+                try:
+                    decision = await asyncio.wait_for(
+                        asyncio.to_thread(stage.evaluate, request, self.config), timeout=3.0
+                    )
+                except TimeoutError:
+                    decision = PipelineDecision(
+                        stage=PipelineStage.EGRESS,
+                        action=Action.DENY,
+                        reason="Destination address lookup timed out",
+                        severity=Severity.HIGH,
+                    )
+            else:
+                decision = stage.evaluate(request, self.config)
             if decision is None:
                 continue
 
@@ -191,15 +211,13 @@ class PipelineRunner:
                 continue
 
             if decision.action == Action.ALLOW:
-                # Explicit allow from policy, skip remaining stages
-                latency = (time.time() - start) * 1000
-                self.audit.log(request, decision, latency)
-                return None
+                allowed_decision = decision
+                continue
 
         # All stages passed — don't log twice if approval was already logged
         if not logged:
             latency = (time.time() - start) * 1000
-            self.audit.log(request, None, latency)
+            self.audit.log(request, allowed_decision, latency)
         return None
 
     def scan_outbound(
@@ -223,9 +241,18 @@ class PipelineRunner:
 
     def reload_config(self, config: GatewayConfig) -> None:
         """Hot-reload configuration."""
-        self.config = config
-        # Rebuild config-derived components (alert channels, threat feed rules)
+        # Validate replacements before publishing any of the new configuration.
+        feed = _build_threat_feed(config)
+        alerts = _build_alert_engine(config)
+        try:
+            audit = self.audit.reconfigured(config)
+        except Exception:
+            if alerts is not None:
+                alerts.close()
+            raise
         if self._alerts is not None:
             self._alerts.close()
-        self._alerts = _build_alert_engine(config)
-        self._threat_feed.feed = _build_threat_feed(config)
+        self.config = config
+        self.audit = audit
+        self._alerts = alerts
+        self._threat_feed.feed = feed

@@ -79,10 +79,10 @@ Live event feed and statistics.
 
 ### 🔏 Signed Audit Trail
 
-Every event is cryptographically signed (Ed25519) with a hash chain for tamper detection. Export to SIEM (CEF/LEEF), Syslog, CSV, or JSON.
+Enable `audit.sign: true` to sign every event with Ed25519 in addition to the hash chain. Export to SIEM (CEF/LEEF), Syslog, CSV, or JSON.
 
 ```bash
-mcp-firewall audit verify    # Verify chain integrity
+mcp-firewall audit    # Verify chain integrity
 mcp-firewall audit export --format cef --output siem.log
 ```
 

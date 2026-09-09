@@ -1,5 +1,11 @@
 # Threat Feed
 
+Enabled feeds are loaded strictly. Missing configured directories, invalid YAML,
+unknown severity/actions, and invalid match patterns fail startup or `validate`
+with the failing path in the error. A directory is applied only after every rule
+loads successfully. Invalid SDK reloads retain the previous active configuration.
+Set `threatFeed.enabled: false` to disable feed loading explicitly.
+
 Community-maintained detection rules for known attack patterns.
 
 ## Built-in Rules

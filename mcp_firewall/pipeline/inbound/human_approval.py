@@ -9,15 +9,14 @@ import sys
 from rich.console import Console
 from rich.panel import Panel
 
-from ..base import InboundStage
 from ...models import (
-    Action,
     GatewayConfig,
     PipelineDecision,
     PipelineStage,
     Severity,
     ToolCallRequest,
 )
+from ..base import InboundStage
 
 
 class HumanApproval(InboundStage):
@@ -46,7 +45,7 @@ class HumanApproval(InboundStage):
         self._always_approved: set[tuple[str, str]] = set()
         self._console = Console(stderr=True)
 
-    def evaluate(self, request: ToolCallRequest, config: GatewayConfig) -> PipelineDecision | None:
+    def evaluate(self, request: ToolCallRequest, config: GatewayConfig) -> PipelineDecision:
         """Synchronous evaluation (SDK / non-async callers)."""
         decision = self._pre_approved(request)
         if decision is not None:
@@ -57,9 +56,7 @@ class HumanApproval(InboundStage):
 
         return self._prompt_user(request)
 
-    async def aevaluate(
-        self, request: ToolCallRequest, config: GatewayConfig
-    ) -> PipelineDecision | None:
+    async def aevaluate(self, request: ToolCallRequest, config: GatewayConfig) -> PipelineDecision:
         """Async evaluation — the blocking prompt runs off the event loop."""
         decision = self._pre_approved(request)
         if decision is not None:
@@ -98,14 +95,16 @@ class HumanApproval(InboundStage):
             args_str = args_str[:500] + "\n  ... (truncated)"
 
         self._console.print()
-        self._console.print(Panel(
-            f"[bold yellow]Tool Call Approval Required[/bold yellow]\n\n"
-            f"[bold]Agent:[/bold] {request.agent_id}\n"
-            f"[bold]Tool:[/bold]  {request.tool_name}\n"
-            f"[bold]Args:[/bold]\n{args_str}",
-            border_style="yellow",
-            expand=False,
-        ))
+        self._console.print(
+            Panel(
+                f"[bold yellow]Tool Call Approval Required[/bold yellow]\n\n"
+                f"[bold]Agent:[/bold] {request.agent_id}\n"
+                f"[bold]Tool:[/bold]  {request.tool_name}\n"
+                f"[bold]Args:[/bold]\n{args_str}",
+                border_style="yellow",
+                expand=False,
+            )
+        )
 
         try:
             self._console.print("  [yellow]Allow this call? [y/N/always]:[/yellow] ", end="")

@@ -205,9 +205,9 @@ class TestProxyRobustness:
         assert await proxy._intercept_request(b'"just a string"') is None
         assert await proxy._intercept_request(b"[1, 2]") is None
 
-    async def test_non_json_passes_through(self):
+    async def test_non_json_is_rejected(self):
         proxy = make_proxy()
-        assert await proxy._intercept_request(b"not json at all") == b"not json at all"
+        assert await proxy._intercept_request(b"not json at all") is None
 
     async def test_invalid_tool_call_sends_error(self, capsys):
         proxy = make_proxy()
@@ -229,9 +229,9 @@ class TestProxyRobustness:
         assert await proxy._intercept_request(raw) is None
         assert capsys.readouterr().out == ""
 
-    async def test_non_dict_response_passes_through(self):
+    async def test_non_dict_response_is_dropped(self):
         proxy = make_proxy()
-        assert await proxy._intercept_response(b"42") == b"42"
+        assert await proxy._intercept_response(b"42") is None
 
 
 # --- H4: agent identity from initialize handshake ---
@@ -352,7 +352,8 @@ class TestBufferLimit:
         reader.feed_data(b"x" * (MAX_MESSAGE_SIZE + 1))
         proxy._server_proc = SimpleNamespace(stdout=reader)
 
-        await asyncio.wait_for(proxy._proxy_server_to_client(), timeout=5.0)
+        with pytest.raises(ValueError, match="10 MB"):
+            await asyncio.wait_for(proxy._proxy_server_to_client(), timeout=5.0)
 
 
 # --- M10: exit code mapping ---

@@ -4,11 +4,12 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from typing import Any
 
 import httpx
 
-from .engine import AlertChannel, AlertEvent
 from ..models import Severity
+from .engine import AlertChannel, AlertEvent
 
 logger = logging.getLogger("mcp_firewall.alerts.slack")
 
@@ -50,6 +51,7 @@ class SlackChannel(AlertChannel):
     async def send(self, alert: AlertEvent) -> bool:
         emoji = SEVERITY_EMOJI.get(alert.severity, "⚪")
         severity = alert.severity.value.upper()
+        stage = alert.decision.stage.value if alert.decision.stage else "n/a"
 
         blocks = [
             {
@@ -65,7 +67,10 @@ class SlackChannel(AlertChannel):
                     {"type": "mrkdwn", "text": f"*Tool:*\n`{alert.request.tool_name}`"},
                     {"type": "mrkdwn", "text": f"*Agent:*\n`{alert.request.agent_id}`"},
                     {"type": "mrkdwn", "text": f"*Action:*\n{alert.decision.action.value}"},
-                    {"type": "mrkdwn", "text": f"*Stage:*\n{alert.decision.stage.value if alert.decision.stage else 'n/a'}"},
+                    {
+                        "type": "mrkdwn",
+                        "text": f"*Stage:*\n{stage}",
+                    },
                 ],
             },
             {
@@ -77,7 +82,7 @@ class SlackChannel(AlertChannel):
             },
         ]
 
-        payload: dict = {"blocks": blocks}
+        payload: dict[str, Any] = {"blocks": blocks}
         if self.channel:
             payload["channel"] = self.channel
 

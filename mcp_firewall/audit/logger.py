@@ -5,8 +5,12 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import os
 import threading
 from pathlib import Path
+from typing import Any
+
+from filelock import FileLock
 
 from ..models import Action, AuditEvent, GatewayConfig, PipelineDecision, Severity, ToolCallRequest
 
@@ -16,12 +20,17 @@ _log = logging.getLogger(__name__)
 class AuditLogger:
     """Thread-safe append-only audit logger with hash chain integrity and optional signing."""
 
-    def __init__(self, config: GatewayConfig) -> None:
-        self.enabled = config.audit.enabled
-        self.path = Path(config.audit.path)
+    def __init__(self, config: GatewayConfig, *, verification_only: bool = False) -> None:
+        self.enabled = config.audit.enabled and not verification_only
+        self.path = Path(config.audit.path).expanduser().resolve()
         self._lock = threading.Lock()
+        self._file_lock = FileLock(str(self.path) + ".lock")
         self._previous_hash = "genesis"
         self._count = 0
+        self._offset = 0
+        self._file_id: tuple[int, int] | None = None
+        self._last_signed = False
+        self._require_signatures = config.audit.sign
         self._signer = None
         self._max_bytes = max(config.audit.max_size_mb, 0) * 1024 * 1024
 
@@ -29,28 +38,82 @@ class AuditLogger:
             self.path.parent.mkdir(parents=True, exist_ok=True)
             if config.audit.sign:
                 from .signer import AuditSigner
+
                 self._signer = AuditSigner()
             # Resume hash chain from last entry
             if self.path.exists():
-                self._resume_chain()
+                with self._file_lock:
+                    self._resume_chain()
 
     def _resume_chain(self) -> None:
         """Resume hash chain from last log entry."""
         try:
-            with open(self.path) as f:
-                last_line = ""
-                for line in f:
-                    line = line.strip()
-                    if line:
-                        last_line = line
-                        self._count += 1
-                if last_line:
-                    json.loads(last_line)  # validate last line is parseable
-                    self._previous_hash = self._hash_entry(last_line)
+            self._sync_chain()
         except Exception as exc:
-            # Corrupt or unreadable log: the chain restarts at "genesis", which
-            # makes the break visible to verify_chain instead of hiding it.
+            # Inspecting the logger remains possible; a subsequent append
+            # retries validation and refuses the corrupt tail.
             _log.warning("Could not resume audit hash chain from %s: %s", self.path, exc)
+
+    def _sync_chain(self) -> None:
+        """Read only entries appended since our last write, under the process lock."""
+        if not self.path.exists():
+            self._reset_chain()
+            return
+        with self.path.open("rb") as stream:
+            stat = os.fstat(stream.fileno())
+            identity = (stat.st_dev, stat.st_ino)
+            if identity != self._file_id or stat.st_size < self._offset:
+                self._reset_chain()
+            self._file_id = identity
+            stream.seek(self._offset)
+            for raw in stream:
+                if not raw.endswith(b"\n"):
+                    raise ValueError("Audit log has an incomplete final entry")
+                line = raw.decode("utf-8").strip()
+                if line:
+                    entry = json.loads(line)
+                    if (
+                        not isinstance(entry, dict)
+                        or entry.get("previous_hash") != self._previous_hash
+                    ):
+                        raise ValueError("Cannot append to a broken audit chain")
+                    self._previous_hash = self._hash_entry(line)
+                    self._last_signed = bool(entry.get("signature"))
+                    self._count += 1
+                self._offset += len(raw)
+
+    def _reset_chain(self) -> None:
+        self._previous_hash = "genesis"
+        self._count = self._offset = 0
+        self._file_id = None
+        self._last_signed = False
+
+    def _append(self, event: AuditEvent) -> None:
+        data = json.loads(event.model_dump_json())
+        if self._signer:
+            canonical = json.dumps(data, sort_keys=True, separators=(",", ":"))
+            data["signature"] = self._signer.sign(canonical)
+        line = json.dumps(data, separators=(",", ":"))
+        payload = (line + "\n").encode("utf-8")
+        with self.path.open("ab") as stream:
+            stream.write(payload)
+            stream.flush()
+            stat = os.fstat(stream.fileno())
+        self._file_id = (stat.st_dev, stat.st_ino)
+        self._offset = stat.st_size
+        self._previous_hash = self._hash_entry(line)
+        self._last_signed = self._signer is not None
+        self._count += 1
+
+    def reconfigured(self, config: GatewayConfig) -> AuditLogger:
+        """Prepare a new logger; a signing-mode change starts a linked generation."""
+        replacement = AuditLogger(config)
+        if replacement.enabled:
+            with replacement._lock, replacement._file_lock:
+                replacement._sync_chain()
+                if replacement._count and replacement._last_signed != config.audit.sign:
+                    replacement._rotate_if_needed(force=True)
+        return replacement
 
     def log(
         self,
@@ -66,7 +129,12 @@ class AuditLogger:
         # must run under the lock, otherwise concurrent log() calls can read the
         # same previous_hash and append entries in the wrong order, breaking the
         # chain.
-        with self._lock:
+        with self._lock, self._file_lock:
+            self._sync_chain()
+            if self._count and self._last_signed != (self._signer is not None):
+                raise ValueError(
+                    "Audit signing mode differs from existing log; reload or use a new path"
+                )
             self._rotate_if_needed()
 
             event = AuditEvent(
@@ -81,21 +149,9 @@ class AuditLogger:
                 previous_hash=self._previous_hash,
             )
 
-            data = json.loads(event.model_dump_json())
+            self._append(event)
 
-            # Add signature if signing is enabled
-            if self._signer:
-                canonical = json.dumps(data, sort_keys=True, separators=(",", ":"))
-                data["signature"] = self._signer.sign(canonical)
-
-            line = json.dumps(data, separators=(",", ":"))
-
-            with open(self.path, "a") as f:
-                f.write(line + "\n")
-            self._previous_hash = self._hash_entry(line)
-            self._count += 1
-
-    def _rotate_if_needed(self) -> None:
+    def _rotate_if_needed(self, *, force: bool = False) -> None:
         """Rotate the log once it has reached audit.max_size_mb.
 
         Rotation keeps each file's hash chain intact: the current log is renamed
@@ -106,20 +162,19 @@ class AuditLogger:
         append, so a file may overshoot the limit by at most one entry. Must be
         called with the lock held.
         """
-        if self._max_bytes <= 0:
+        if self._max_bytes <= 0 and not force:
             return
         try:
             size = self.path.stat().st_size
         except OSError:
             return  # no log yet
-        if size < self._max_bytes:
+        if size < self._max_bytes and not force:
             return
 
         rotated = self.path.with_name(self.path.name + ".1")
         self.path.replace(rotated)
         old_head = self._previous_hash
-        self._previous_hash = "genesis"
-        self._count = 0
+        self._reset_chain()
         _log.info("Audit log %s rotated to %s (size limit reached)", self.path, rotated)
 
         marker = AuditEvent(
@@ -133,17 +188,9 @@ class AuditLogger:
             latency_ms=0.0,
             previous_hash="genesis",
         )
-        data = json.loads(marker.model_dump_json())
-        if self._signer:
-            canonical = json.dumps(data, sort_keys=True, separators=(",", ":"))
-            data["signature"] = self._signer.sign(canonical)
-        line = json.dumps(data, separators=(",", ":"))
-        with open(self.path, "a") as f:
-            f.write(line + "\n")
-        self._previous_hash = self._hash_entry(line)
-        self._count += 1
+        self._append(marker)
 
-    def verify_chain(self) -> tuple[bool, int, str]:
+    def verify_chain(self, public_key_path: str | Path | None = None) -> tuple[bool, int, str]:
         """Verify the hash chain integrity.
 
         Returns: (is_valid, entries_checked, error_message)
@@ -156,23 +203,49 @@ class AuditLogger:
 
         previous_hash = "genesis"
         count = 0
+        verifier = None
 
-        with open(self.path) as f:
-            for line_num, line in enumerate(f, 1):
-                line = line.strip()
-                if not line:
-                    continue
-
+        with self.path.open("rb") as f:
+            for line_num, raw in enumerate(f, 1):
                 try:
+                    line = raw.decode("utf-8").strip()
+                    if not line:
+                        continue
                     entry = json.loads(line)
-                except json.JSONDecodeError:
+                except (ValueError, RecursionError):
                     return False, count, f"Invalid JSON at line {line_num}"
 
+                if not isinstance(entry, dict):
+                    return False, count, f"Invalid audit entry at line {line_num}"
+
+                signature = entry.get("signature")
+                if self._require_signatures and not signature:
+                    return False, count, f"Missing signature at line {line_num}"
+                if signature is not None:
+                    if verifier is None:
+                        from .signer import AuditVerifier
+
+                        try:
+                            verifier = AuditVerifier(public_key_path)
+                        except (OSError, ValueError) as exc:
+                            return False, count, f"Cannot load audit public key: {exc}"
+                    canonical = json.dumps(
+                        {k: v for k, v in entry.items() if k != "signature"},
+                        sort_keys=True,
+                        separators=(",", ":"),
+                    )
+                    if not verifier.verify(canonical, signature):
+                        return False, count, f"Invalid signature at line {line_num}"
+
                 if entry.get("previous_hash") != previous_hash:
-                    return False, count, (
-                        f"Hash chain broken at line {line_num}: "
-                        f"expected '{previous_hash[:16]}...', "
-                        f"got '{entry.get('previous_hash', '')[:16]}...'"
+                    return (
+                        False,
+                        count,
+                        (
+                            f"Hash chain broken at line {line_num}: "
+                            f"expected '{previous_hash[:16]}...', "
+                            f"got '{str(entry.get('previous_hash', ''))[:16]}...'"
+                        ),
                     )
 
                 previous_hash = self._hash_entry(line)
@@ -190,7 +263,7 @@ class AuditLogger:
         return hashlib.sha256(line.encode()).hexdigest()
 
     @staticmethod
-    def _hash_arguments(arguments: dict) -> str:
+    def _hash_arguments(arguments: dict[str, Any]) -> str:
         """SHA-256 hash of arguments (privacy-preserving)."""
         canonical = json.dumps(arguments, sort_keys=True, separators=(",", ":"))
         return hashlib.sha256(canonical.encode()).hexdigest()[:16]

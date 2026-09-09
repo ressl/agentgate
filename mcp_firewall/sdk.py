@@ -172,7 +172,11 @@ class Gateway:
         if blocked:
             cleaned_text = ""
         else:
-            cleaned_text = scanned_response.content[0].get("text", content) if scanned_response.content else content
+            cleaned_text = (
+                scanned_response.content[0].get("text", content)
+                if scanned_response.content
+                else content
+            )
 
         findings = [
             {
@@ -193,8 +197,9 @@ class Gateway:
 
     def reload(self, config_path: str | Path | None = None) -> None:
         """Reload configuration."""
-        self._config = load_config(config_path)
-        self._pipeline.reload_config(self._config)
+        config = load_config(config_path)
+        self._pipeline.reload_config(config)
+        self._config = config
 
     @property
     def config(self) -> GatewayConfig:

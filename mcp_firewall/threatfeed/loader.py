@@ -35,7 +35,7 @@ class ThreatRule:
         self.match = match
         self.action = action
         self.tags = tags or []
-        self._compiled_patterns: dict[str, re.Pattern] = {}
+        self._compiled_patterns: dict[str, re.Pattern[str]] = {}
         self._compile_failed = False
         self._compile()
 
@@ -51,18 +51,18 @@ class ThreatRule:
             if not isinstance(pattern, str):
                 logger.warning(
                     "Threat rule %s: non-string pattern for argument '%s', rule disabled",
-                    self.id, key,
+                    self.id,
+                    key,
                 )
                 self._compile_failed = True
                 continue
             try:
-                self._compiled_patterns[key] = re.compile(
-                    _glob_to_regex(pattern), re.IGNORECASE
-                )
+                self._compiled_patterns[key] = re.compile(_glob_to_regex(pattern), re.IGNORECASE)
             except re.error:
                 logger.warning(
                     "Threat rule %s: invalid pattern for argument '%s', rule disabled",
-                    self.id, key,
+                    self.id,
+                    key,
                 )
                 self._compile_failed = True
 
@@ -74,18 +74,14 @@ class ThreatRule:
                     _glob_to_regex(tool_pattern), re.IGNORECASE
                 )
             except re.error:
-                logger.warning(
-                    "Threat rule %s: invalid tool pattern, rule disabled", self.id
-                )
+                logger.warning("Threat rule %s: invalid tool pattern, rule disabled", self.id)
                 self._compile_failed = True
 
         # Description pattern (raw regex, matched against all argument values)
         desc_pattern = self.match.get("description")
         if desc_pattern:
             try:
-                self._compiled_patterns["__description__"] = re.compile(
-                    desc_pattern, re.IGNORECASE
-                )
+                self._compiled_patterns["__description__"] = re.compile(desc_pattern, re.IGNORECASE)
             except re.error:
                 logger.warning(
                     "Threat rule %s: invalid description pattern, rule disabled", self.id
@@ -139,17 +135,17 @@ class ThreatFeed:
     def load_directory(self, path: str | Path) -> int:
         """Load all YAML rules from a directory. Returns count loaded."""
         path = Path(path)
-        if not path.exists():
-            return 0
+        if not path.is_dir():
+            raise ValueError(f"Threat feed directory not found: {path}")
 
-        count = 0
+        staged = ThreatFeed()
         for yaml_file in sorted(path.glob("*.yaml")):
             try:
-                self.load_file(yaml_file)
-                count += 1
-            except Exception:
-                pass
-        return count
+                staged.load_file(yaml_file)
+            except Exception as exc:
+                raise ValueError(f"Invalid threat rule {yaml_file}: {exc}") from exc
+        self.rules.extend(staged.rules)
+        return len(staged.rules)
 
     def load_file(self, path: str | Path) -> ThreatRule:
         """Load a single rule file."""
@@ -165,6 +161,8 @@ class ThreatFeed:
             action=Action(data.get("action", "deny")),
             tags=data.get("tags", []),
         )
+        if rule._compile_failed:
+            raise ValueError(f"Invalid match pattern in threat rule {path}")
         self.rules.append(rule)
         return rule
 

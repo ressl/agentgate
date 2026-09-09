@@ -6,8 +6,8 @@ import asyncio
 import logging
 import logging.handlers
 
-from .engine import AlertChannel, AlertEvent
 from ..models import Severity
+from .engine import AlertChannel, AlertEvent
 
 # CEF severity mapping (0-10)
 CEF_SEVERITY = {
@@ -32,12 +32,7 @@ def _cef_escape_header(value: str) -> str:
 
 def _cef_escape_extension(value: str) -> str:
     """Escape a value for a CEF extension field (backslash, '=', CR/LF)."""
-    return (
-        value.replace("\\", "\\\\")
-        .replace("=", "\\=")
-        .replace("\r", "\\r")
-        .replace("\n", "\\n")
-    )
+    return value.replace("\\", "\\\\").replace("=", "\\=").replace("\r", "\\r").replace("\n", "\\n")
 
 
 class SyslogChannel(AlertChannel):

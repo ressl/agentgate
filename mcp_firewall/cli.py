@@ -23,12 +23,23 @@ def main() -> None:
 
 @main.command()
 @click.argument("server_args", nargs=-1, required=True)
-@click.option("--config", "config_path", type=click.Path(exists=True), help="Path to mcp-firewall.yaml")
+@click.option(
+    "--config", "config_path", type=click.Path(exists=True), help="Path to mcp-firewall.yaml"
+)
 @click.option("--dashboard", is_flag=True, help="Enable real-time dashboard (Phase 3)")
-@click.option("--dashboard-host", default="127.0.0.1", show_default=True, help="Dashboard bind host")
-@click.option("--dashboard-port", default=9090, show_default=True, type=int, help="Dashboard bind port")
-def wrap(server_args: tuple[str, ...], config_path: str | None, dashboard: bool,
-         dashboard_host: str, dashboard_port: int) -> None:
+@click.option(
+    "--dashboard-host", default="127.0.0.1", show_default=True, help="Dashboard bind host"
+)
+@click.option(
+    "--dashboard-port", default=9090, show_default=True, type=int, help="Dashboard bind port"
+)
+def wrap(
+    server_args: tuple[str, ...],
+    config_path: str | None,
+    dashboard: bool,
+    dashboard_host: str,
+    dashboard_port: int,
+) -> None:
     """Wrap an MCP server with mcp-firewall protection.
 
     Usage: mcp-firewall wrap -- npx @modelcontextprotocol/server-filesystem /tmp
@@ -36,11 +47,14 @@ def wrap(server_args: tuple[str, ...], config_path: str | None, dashboard: bool,
     console = Console(stderr=True)
 
     # Banner
-    console.print(Panel(
-        "[bold blue]mcp-firewall[/bold blue] v{} 🛡️\n[dim]Security gateway for AI agents[/dim]".format(__version__),
-        border_style="blue",
-        expand=False,
-    ))
+    console.print(
+        Panel(
+            f"[bold blue]mcp-firewall[/bold blue] v{__version__} 🛡️\n"
+            "[dim]Security gateway for AI agents[/dim]",
+            border_style="blue",
+            expand=False,
+        )
+    )
 
     # Load config
     config = load_config(config_path)
@@ -48,17 +62,21 @@ def wrap(server_args: tuple[str, ...], config_path: str | None, dashboard: bool,
     console.print(f"  [dim]Default action:[/dim] {config.default_action.value}")
     console.print(f"  [dim]Rules:[/dim] {len(config.rules)}")
     console.print(f"  [dim]Agents:[/dim] {len(config.agents)}")
-    console.print(f"  [dim]Audit:[/dim] {config.audit.path if config.audit.enabled else 'disabled'}")
+    console.print(
+        f"  [dim]Audit:[/dim] {config.audit.path if config.audit.enabled else 'disabled'}"
+    )
     console.print()
 
     if dashboard:
         from .dashboard.server import start_dashboard
+
         start_dashboard(host=dashboard_host, port=dashboard_port)
         console.print(f"  [green]Dashboard:[/green] http://{dashboard_host}:{dashboard_port}")
         console.print()
 
     # Start proxy
     from .proxy.stdio import StdioProxy
+
     proxy = StdioProxy(config, console)
 
     try:
@@ -82,7 +100,7 @@ def init(enterprise: bool, output: str) -> None:
     content = generate_enterprise_config() if enterprise else generate_default_config()
     Path(output).write_text(content)
     console.print(f"[green]✓[/green] Generated {output}")
-    console.print(f"[dim]  Edit the file, then: mcp-firewall wrap -- <your-mcp-server>[/dim]")
+    console.print("[dim]  Edit the file, then: mcp-firewall wrap -- <your-mcp-server>[/dim]")
 
 
 def generate_enterprise_config() -> str:
@@ -103,7 +121,10 @@ def validate(config_path: str) -> None:
     console = Console()
     try:
         config = load_config(config_path)
-        console.print(f"[green]✓[/green] Configuration valid")
+        from .pipeline.runner import _build_threat_feed
+
+        _build_threat_feed(config)
+        console.print("[green]✓[/green] Configuration valid")
         console.print(f"  [dim]Version:[/dim] {config.version}")
         console.print(f"  [dim]Default action:[/dim] {config.default_action.value}")
         console.print(f"  [dim]Rules:[/dim] {len(config.rules)}")
@@ -115,19 +136,23 @@ def validate(config_path: str) -> None:
 
 @main.command()
 @click.option("--config", "config_path", type=click.Path(exists=True))
-def audit(config_path: str | None) -> None:
+@click.option("--public-key", type=click.Path(exists=True), help="Trusted Ed25519 public key PEM")
+@click.option("--require-signatures", is_flag=True, help="Reject unsigned audit entries")
+def audit(config_path: str | None, public_key: str | None, require_signatures: bool) -> None:
     """Verify audit log integrity."""
     console = Console()
     config = load_config(config_path)
+    config.audit.sign = config.audit.sign or require_signatures
 
     from .audit.logger import AuditLogger
-    logger = AuditLogger(config)
+
+    logger = AuditLogger(config, verification_only=True)
 
     if not logger.path.exists():
         console.print(f"[red]✗[/red] Audit log not found: {logger.path}")
         sys.exit(1)
 
-    is_valid, count, error = logger.verify_chain()
+    is_valid, count, error = logger.verify_chain(public_key_path=public_key)
 
     if is_valid:
         console.print(f"[green]✓[/green] Audit log integrity verified ({count} entries)")
@@ -146,6 +171,7 @@ def scan(server_args: tuple[str, ...], output_format: str, severity: str) -> Non
     Usage: mcp-firewall scan -- python my_server.py
     """
     from .scanner import run_scan
+
     extra = []
     if output_format != "text":
         extra.extend(["--format", output_format])
@@ -170,6 +196,7 @@ def report() -> None:
 def report_dora(audit_log: str, output: str | None) -> None:
     """Generate DORA compliance report."""
     from .compliance.report import generate_dora_report
+
     _output_report(generate_dora_report(audit_log), output)
 
 
@@ -179,6 +206,7 @@ def report_dora(audit_log: str, output: str | None) -> None:
 def report_finma(audit_log: str, output: str | None) -> None:
     """Generate FINMA compliance report."""
     from .compliance.report import generate_finma_report
+
     _output_report(generate_finma_report(audit_log), output)
 
 
@@ -188,6 +216,7 @@ def report_finma(audit_log: str, output: str | None) -> None:
 def report_soc2(audit_log: str, output: str | None) -> None:
     """Generate SOC 2 Type II evidence report."""
     from .compliance.report import generate_soc2_report
+
     _output_report(generate_soc2_report(audit_log), output)
 
 
@@ -227,13 +256,20 @@ def feed_list(rules_dir: str | None) -> None:
         return
 
     from rich.table import Table
+
     table = Table(title="Threat Feed Rules")
     table.add_column("ID", style="cyan")
     table.add_column("Name")
     table.add_column("Severity")
     table.add_column("Tags", style="dim")
 
-    sev_colors = {"critical": "red", "high": "yellow", "medium": "bright_yellow", "low": "blue", "info": "white"}
+    sev_colors = {
+        "critical": "red",
+        "high": "yellow",
+        "medium": "bright_yellow",
+        "low": "blue",
+        "info": "white",
+    }
 
     for r in tf.list_rules():
         color = sev_colors.get(r["severity"], "white")

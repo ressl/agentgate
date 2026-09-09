@@ -26,7 +26,7 @@ def run_scan(server_args: list[str], extra_args: list[str] | None = None) -> int
         cmd.extend(extra_args)
 
     try:
-        result = subprocess.run(cmd, capture_output=False)
+        result = subprocess.run(cmd, capture_output=False)  # noqa: S603 — operator-supplied server argv
         return result.returncode
     except FileNotFoundError:
         print("Error: mcpwn is not installed.", file=sys.stderr)

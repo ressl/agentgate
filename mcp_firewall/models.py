@@ -7,10 +7,10 @@ import uuid
 from enum import Enum
 from typing import Any
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 
-class Action(str, Enum):
+class Action(str, Enum):  # noqa: UP042 — preserve the existing Enum string representation
     """Policy decision actions."""
 
     ALLOW = "allow"
@@ -20,7 +20,7 @@ class Action(str, Enum):
     ALERT = "alert"  # allow but alert
 
 
-class Severity(str, Enum):
+class Severity(str, Enum):  # noqa: UP042 — preserve the existing Enum string representation
     """Alert/finding severity levels."""
 
     CRITICAL = "critical"
@@ -33,20 +33,20 @@ class Severity(str, Enum):
     def rank(self) -> int:
         return {"critical": 5, "high": 4, "medium": 3, "low": 2, "info": 1}[self.value]
 
-    def __ge__(self, other: "Severity") -> bool:  # type: ignore[override]
+    def __ge__(self, other: Severity) -> bool:  # type: ignore[override]
         return self.rank >= other.rank
 
-    def __gt__(self, other: "Severity") -> bool:  # type: ignore[override]
+    def __gt__(self, other: Severity) -> bool:  # type: ignore[override]
         return self.rank > other.rank
 
-    def __le__(self, other: "Severity") -> bool:  # type: ignore[override]
+    def __le__(self, other: Severity) -> bool:  # type: ignore[override]
         return self.rank <= other.rank
 
-    def __lt__(self, other: "Severity") -> bool:  # type: ignore[override]
+    def __lt__(self, other: Severity) -> bool:  # type: ignore[override]
         return self.rank < other.rank
 
 
-class PipelineStage(str, Enum):
+class PipelineStage(str, Enum):  # noqa: UP042 — preserve the existing Enum string representation
     """Pipeline stage identifiers."""
 
     KILL_SWITCH = "kill_switch"
@@ -58,7 +58,7 @@ class PipelineStage(str, Enum):
     POLICY = "policy"
     CHAIN_DETECTOR = "chain_detector"
     HUMAN_APPROVAL = "human_approval"
-    SECRET_SCANNER = "secret_scanner"
+    SECRET_SCANNER = "secret_scanner"  # noqa: S105 — a stage identifier, not a credential
     PII_DETECTOR = "pii_detector"
     EXFIL_DETECTOR = "exfil_detector"
     CONTENT_POLICY = "content_policy"
@@ -79,8 +79,26 @@ class ToolCallResponse(BaseModel):
 
     request_id: str
     content: list[dict[str, Any]] = Field(default_factory=list)
+    structured_content: dict[str, Any] | None = None
+    extra_fields: dict[str, Any] = Field(default_factory=dict)
     is_error: bool = False
     timestamp: float = Field(default_factory=time.time)
+
+    @field_validator("content")
+    @classmethod
+    def validate_text_content(cls, items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        for item in items:
+            if "text" in item and not isinstance(item["text"], str):
+                raise ValueError("Content text must be a string")
+            if item.get("type") == "text" and "text" not in item:
+                raise ValueError("Text content requires text")
+            if item.get("type") == "resource":
+                resource = item.get("resource")
+                if not isinstance(resource, dict):
+                    raise ValueError("Embedded resource must be an object")
+                if "text" in resource and not isinstance(resource["text"], str):
+                    raise ValueError("Resource text must be a string")
+        return items
 
 
 class PipelineDecision(BaseModel):
