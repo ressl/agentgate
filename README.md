@@ -201,6 +201,9 @@ single-call approval in the local dashboard. Set `MCP_FIREWALL_DASHBOARD_TOKEN`
 and connect the controller first. Missing approval, timeout or controller loss
 denies the call; global restrictions still apply. See [setup and limits](docs/desktop-approvals.md).
 
+A [native AgentReins adapter](integrations/agentreins/README.md) adds the same
+approval controls and correlated protocol evidence to a pinned AgentReins development build.
+
 ## Integration events
 
 Export versioned lifecycle events to a local desktop companion or another HTTP

@@ -15,6 +15,7 @@ from fastapi.responses import HTMLResponse, Response
 from ..models import EventPhase, SecurityEvent
 from .approval_ui import APPROVAL_HTML, APPROVAL_SCRIPT
 from .approvals import router as approval_router
+from .event_feed import record_integration_event
 
 # Cap for the by_* aggregation dicts: tool and agent names are
 # attacker-controlled, so the number of distinct keys must stay bounded.
@@ -60,6 +61,7 @@ class DashboardState:
 
     def add_security_event(self, event: SecurityEvent) -> None:
         """Display final decisions without counting lifecycle observations as calls."""
+        record_integration_event(event)
         if event.phase not in {
             EventPhase.REQUEST_ALLOWED,
             EventPhase.REQUEST_DENIED,
@@ -158,7 +160,10 @@ async def security_headers(
     response.headers["X-Frame-Options"] = "DENY"
     response.headers["Content-Security-Policy"] = "frame-ancestors 'none'; base-uri 'none'"
     response.headers["X-Content-Type-Options"] = "nosniff"
-    if request.url.path.startswith("/api/approval"):
+    if (
+        request.url.path.startswith("/api/approval")
+        or request.url.path == "/api/integration-events"
+    ):
         response.headers["Cache-Control"] = "no-store"
     return response
 

@@ -5,10 +5,11 @@ from __future__ import annotations
 import hashlib
 import hmac
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel, ConfigDict, Field, StrictBool, ValidationError
 
 from ..approvals import ApprovalBroker, PendingApproval
+from .event_feed import IntegrationEventPage, event_feed
 
 router = APIRouter()
 LOOPBACK_HOSTS = {"127.0.0.1", "localhost", "::1"}
@@ -32,6 +33,7 @@ def configure_approvals(broker: ApprovalBroker | None, token: str | None) -> Non
         _broker.disconnect()
     _token_digest = hashlib.sha256(token.encode()).digest() if token and broker else None
     _broker = broker
+    event_feed.reset(enabled=broker is not None)
 
 
 def _error(status: int, detail: str) -> HTTPException:
@@ -67,6 +69,22 @@ class _Decision(BaseModel):
 @router.get("/api/approval-mode")
 async def approval_mode() -> dict[str, bool]:
     return {"enabled": _broker is not None}
+
+
+@router.get("/api/integration-events")
+async def integration_events(
+    request: Request,
+    after: int = Query(0, ge=0, le=2**53 - 1),
+    stream_id: str | None = Query(None, max_length=36),
+    limit: int = Query(256, ge=1, le=256),
+) -> IntegrationEventPage:
+    _authenticate(request)  # Reading evidence does not renew the approval lease.
+    try:
+        return event_feed.read(after=after, stream_id=stream_id, limit=limit)
+    except LookupError:
+        raise _error(409, "Event stream restarted; reconnect explicitly") from None
+    except ValueError:
+        raise _error(400, "Invalid event cursor") from None
 
 
 @router.get("/api/approvals")

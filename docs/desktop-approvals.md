@@ -58,8 +58,8 @@ cancels a pending approval. SDK task cancellation is also supported.
 
 This control channel assumes a trusted local operator and trusted same-user processes.
 It does not isolate a malicious process running under the operator's OS account.
-There is no filesystem snapshot, rollback executor or AgentReins-specific adapter
-in this stage.
+A [native AgentReins adapter](../integrations/agentreins/README.md) uses this control
+channel. Filesystem snapshots and a rollback executor remain separate work.
 
 ## Embed the broker
 

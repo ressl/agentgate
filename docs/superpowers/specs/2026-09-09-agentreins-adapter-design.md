@@ -19,7 +19,7 @@ unchanged. No raw arguments or results enter the event feed.
 
 Own Swift adapter sources live in integrations/agentreins. A checked installer
 applies them to a clean, explicitly selected AgentReins checkout pinned to
- dbd4f0abe3ff2d2cd590ac4f7b8e144d7375edbb. Do not vendor upstream sources. Build and
+dbd4f0abe3ff2d2cd590ac4f7b8e144d7375edbb. Do not vendor upstream sources. Build and
 test against its actual GuardEvent and AgentSessionSnapshot implementations.
 
 The Swift client accepts loopback HTTP endpoints, disables redirects/proxies/cookies
@@ -31,6 +31,10 @@ stay absent. Final response statuses never claim verified execution or file effe
 Single-use approval sends the exact ID/hash from the pending view; stale decisions
 refresh the list and never turn into a new approval. No automatic Allow behavior.
 
+Source-specific presentation guards in the existing session, incident and trace
+views prevent protocol outcomes from being labeled as completed tool execution or
+verified process identity. Native agent views retain their existing behavior.
+
 A native SwiftUI pane offers Connect/Disconnect and Allow once/Deny. It is attached
 to the real AgentReins app through the small installation patch. Adapter event
 observations are not fed into its filesystem recovery executor.
@@ -39,10 +43,10 @@ observations are not fed into its filesystem recovery executor.
 
 - [x] Inspect current upstream source, actual event model and local toolchain.
 - [x] Select transport, evidence semantics, safety boundaries and isolated checkout.
-- [ ] Add Python authenticated feed tests and implement bounded replay.
-- [ ] Add Swift parsing/transport/projection tests and implement native adapter/UI.
-- [ ] Compile actual AgentReins with the adapter; run isolated integration tests.
-- [ ] Run actual Python stdio proxy and Swift adapter together, proving call gating,
+- [x] Add Python authenticated feed tests and implement bounded replay.
+- [x] Add Swift parsing/transport/projection tests and implement native adapter/UI.
+- [x] Compile actual AgentReins with the adapter; run isolated integration tests.
+- [x] Run actual Python stdio proxy and Swift adapter together, proving call gating,
       response redaction, explicit denial, lost connection and stale approvals.
-- [ ] Document reproducible setup, verified upstream commit and remaining limits.
-- [ ] Run Python compatibility tests, lint/types, package checks; commit/push/merge.
+- [x] Document reproducible setup, verified upstream commit and remaining limits.
+- [x] Run Python compatibility tests, lint/types and package checks.
