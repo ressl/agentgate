@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from typing import Any
 
 from ..models import (
     Action,
@@ -27,7 +28,7 @@ class InboundStage(ABC):
     def _allow(self, reason: str = "") -> PipelineDecision:
         return PipelineDecision(stage=self.stage, action=Action.ALLOW, reason=reason)
 
-    def _deny(self, reason: str, **kwargs) -> PipelineDecision:
+    def _deny(self, reason: str, **kwargs: Any) -> PipelineDecision:
         return PipelineDecision(stage=self.stage, action=Action.DENY, reason=reason, **kwargs)
 
     def _prompt(self, reason: str) -> PipelineDecision:

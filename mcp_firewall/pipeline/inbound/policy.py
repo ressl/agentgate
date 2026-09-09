@@ -6,16 +6,16 @@ import fnmatch
 import re
 from typing import Any
 
-from ..base import InboundStage
 from ...models import (
     Action,
     GatewayConfig,
     PipelineDecision,
     PipelineStage,
+    RuleConfig,
     Severity,
     ToolCallRequest,
-    RuleConfig,
 )
+from ..base import InboundStage
 
 
 class PolicyEngine(InboundStage):
@@ -26,21 +26,27 @@ class PolicyEngine(InboundStage):
     def evaluate(self, request: ToolCallRequest, config: GatewayConfig) -> PipelineDecision | None:
         # Check agent-specific rules first
         agent_cfg = config.agents.get(request.agent_id)
+        agent_decision = None
         if agent_cfg:
-            decision = self._check_agent_policy(request, agent_cfg)
-            if decision:
-                return decision
+            agent_decision = self._check_agent_policy(request, agent_cfg)
+            if agent_decision and agent_decision.action == Action.DENY:
+                return agent_decision
 
         # Check rules (first match wins)
         for rule in config.rules:
             if self._rule_matches(request, rule):
                 if rule.action == Action.ALLOW:
+                    if agent_decision and agent_decision.action == Action.PROMPT:
+                        return agent_decision
                     return self._allow(f"Rule '{rule.name}' allows this call")
                 elif rule.action == Action.DENY:
                     msg = rule.message or f"Blocked by rule '{rule.name}'"
                     return self._deny(msg, severity=Severity.HIGH)
                 elif rule.action == Action.PROMPT:
                     return self._prompt(f"Rule '{rule.name}' requires approval")
+
+        if agent_decision:
+            return agent_decision
 
         # Default action
         if config.default_action == Action.DENY:

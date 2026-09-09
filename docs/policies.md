@@ -66,6 +66,13 @@ agents:
 3. `allow` explicitly permits
 4. If `allow` list exists but tool is not in it, the call is denied
 
+Agent permissions and global rules both apply. An agent allowlist does not bypass
+global argument restrictions: the first matching global deny still blocks the
+call. An agent approval requirement survives a global allow, and a global deny
+takes precedence over approval. If no global rule matches, an explicit agent
+allow or approval requirement takes precedence over `defaultAction`.
+Allowed calls still pass through chain detection.
+
 ## Rules
 
 Rules are evaluated in order (first match wins):
@@ -143,3 +150,32 @@ The proxy does not watch the config file — restart `mcp-firewall wrap` to appl
 ```python
 gw.reload()  # Re-reads mcp-firewall.yaml, rebuilds alert channels and threat feed rules
 ```
+
+Reload also applies audit enablement, path, signing, and size limits. An invalid
+enabled threat feed rejects the reload and leaves the previous configuration
+active. Changing audit signing mode starts a new log generation linked to the
+archived generation; see [audit integrity](compliance.md#audit-trail-integrity).
+Per-agent rate history is retained only for configured limits. Newly enabled
+agent limits begin with the calls observed after they are enabled.
+
+## Egress checks and response scanning
+
+Egress checks normalize private IPv4/IPv6 literals, localhost names, and trailing
+DNS dots. Hostnames in URLs and network fields such as `host` are resolved and
+every returned address is checked. Lookup failures deny the call while address
+protection is enabled. Async proxy lookups run outside the protocol event loop
+with a three-second wait limit. Arguments exceeding the inspection depth are
+denied rather than partially inspected.
+
+These checks inspect arguments before forwarding them. They do not control the
+server's sockets, later DNS changes, redirects, or destinations constructed by
+arbitrary server code. Use an operating-system/container network policy or a
+controlled network proxy when actual connection-level isolation is required.
+
+Secret and PII scanners cover text inside content blocks (including embedded
+resources), structured output, and result extension fields. All copies are
+redacted; denial returns a replacement result containing no original payload.
+Redaction can change structured values and keys, so redacted output may no longer
+conform to a server's original output schema. Excessive nesting, cycles, and key
+collisions caused by redaction block the result. Private-key redaction removes
+the complete block; an unterminated private-key block consumes the remaining text.

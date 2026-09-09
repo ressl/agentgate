@@ -3,9 +3,7 @@
 from __future__ import annotations
 
 import re
-from typing import Any
 
-from ..base import OutboundStage
 from ...models import (
     Action,
     GatewayConfig,
@@ -14,6 +12,8 @@ from ...models import (
     Severity,
     ToolCallResponse,
 )
+from ..base import OutboundStage
+from .content import map_response_text
 
 # Secret patterns: (name, regex, severity)
 SECRET_PATTERNS: list[tuple[str, str, Severity]] = [
@@ -24,23 +24,45 @@ SECRET_PATTERNS: list[tuple[str, str, Severity]] = [
     ("GitHub PAT (classic)", r"github_pat_[A-Za-z0-9_]{22,}", Severity.CRITICAL),
     ("GitLab Token", r"glpat-[A-Za-z0-9\-_]{20,}", Severity.CRITICAL),
     ("Slack Token", r"xox[baprs]-[A-Za-z0-9\-]{10,}", Severity.CRITICAL),
-    ("Slack Webhook", r"https://hooks\.slack\.com/services/T[A-Z0-9]+/B[A-Z0-9]+/[A-Za-z0-9]+", Severity.HIGH),
+    (
+        "Slack Webhook",
+        r"https://hooks\.slack\.com/services/T[A-Z0-9]+/B[A-Z0-9]+/[A-Za-z0-9]+",
+        Severity.HIGH,
+    ),
     ("Stripe Key", r"(?:sk|pk)_(?:test|live)_[A-Za-z0-9]{20,}", Severity.CRITICAL),
     ("Google API Key", r"AIza[0-9A-Za-z\-_]{35}", Severity.HIGH),
-    ("Heroku API Key", r"(?i)heroku.*['\"][0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}['\"]", Severity.HIGH),
-
+    (
+        "Heroku API Key",
+        r"(?i)heroku.*['\"][0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}['\"]",
+        Severity.HIGH,
+    ),
     # Private Keys
-    ("Private Key", r"-----BEGIN\s+(RSA|EC|DSA|OPENSSH|PGP)?\s*PRIVATE KEY-----", Severity.CRITICAL),
-    ("SSH Private Key", r"-----BEGIN OPENSSH PRIVATE KEY-----", Severity.CRITICAL),
-
+    (
+        "Private Key",
+        r"-----BEGIN\s+(?:RSA |EC |DSA |ENCRYPTED |PGP )?PRIVATE KEY(?: BLOCK)?-----"
+        r"[\s\S]*?(?:-----END\s+(?:RSA |EC |DSA |ENCRYPTED |PGP )?PRIVATE KEY(?: BLOCK)?-----|\Z)",
+        Severity.CRITICAL,
+    ),
+    (
+        "SSH Private Key",
+        r"-----BEGIN OPENSSH PRIVATE KEY-----[\s\S]*?(?:-----END OPENSSH PRIVATE KEY-----|\Z)",
+        Severity.CRITICAL,
+    ),
     # Database URLs
-    ("Database URL", r"(?:postgres(?:ql)?|mysql|mongodb(?:\+srv)?|redis|amqp)://[^\s\"'<>]+", Severity.CRITICAL),
-
+    (
+        "Database URL",
+        r"(?:postgres(?:ql)?|mysql|mongodb(?:\+srv)?|redis|amqp)://[^\s\"'<>]+",
+        Severity.CRITICAL,
+    ),
     # Generic patterns
     ("Bearer Token", r"(?i)bearer\s+[A-Za-z0-9\-._~+/]{20,}", Severity.HIGH),
     ("Basic Auth", r"(?i)basic\s+[A-Za-z0-9+/]{20,}={0,2}", Severity.HIGH),
     ("Password in URL", r"://[^:]+:[^@\s]{3,}@", Severity.CRITICAL),
-    ("JWT Token", r"eyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}", Severity.HIGH),
+    (
+        "JWT Token",
+        r"eyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}",
+        Severity.HIGH,
+    ),
 ]
 
 REDACT_PLACEHOLDER = "[REDACTED by mcp-firewall]"
@@ -58,25 +80,17 @@ class SecretScanner(OutboundStage):
             return response, None
 
         findings: list[tuple[str, Severity]] = []
-        modified = False
 
-        for i, content_item in enumerate(response.content):
-            text = content_item.get("text", "")
-            if not text:
-                continue
-
+        def scan_text(text: str) -> str:
             for name, pattern, severity in SECRET_PATTERNS:
-                matches = list(re.finditer(pattern, text))
-                if matches:
+                if re.search(pattern, text):
                     findings.append((name, severity))
 
                     if config.secrets.action == Action.REDACT:
-                        for match in reversed(matches):
-                            text = text[: match.start()] + REDACT_PLACEHOLDER + text[match.end() :]
-                            modified = True
+                        text = re.sub(pattern, REDACT_PLACEHOLDER, text)
+            return text
 
-            if modified:
-                response.content[i] = {**content_item, "text": text}
+        response = map_response_text(response, scan_text)
 
         if not findings:
             return response, None

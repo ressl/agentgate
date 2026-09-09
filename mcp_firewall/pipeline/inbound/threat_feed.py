@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from ..base import InboundStage
 from ...models import (
     Action,
     GatewayConfig,
@@ -11,6 +10,7 @@ from ...models import (
     ToolCallRequest,
 )
 from ...threatfeed.loader import ThreatFeed
+from ..base import InboundStage
 
 
 class ThreatFeedStage(InboundStage):

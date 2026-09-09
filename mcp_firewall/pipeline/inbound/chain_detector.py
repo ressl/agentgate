@@ -2,11 +2,10 @@
 
 from __future__ import annotations
 
-import time
 import threading
+import time
 from collections import defaultdict
 
-from ..base import InboundStage
 from ...models import (
     GatewayConfig,
     PipelineDecision,
@@ -14,6 +13,7 @@ from ...models import (
     Severity,
     ToolCallRequest,
 )
+from ..base import InboundStage
 
 # Dangerous chains: (read_tools, action_tools, description)
 DANGEROUS_CHAINS: list[tuple[set[str], set[str], str]] = [
@@ -81,8 +81,7 @@ class ChainDetector(InboundStage):
 
             # Clean old entries
             self._history[agent_key] = [
-                (tool, ts) for tool, ts in self._history[agent_key]
-                if now - ts < CHAIN_WINDOW
+                (tool, ts) for tool, ts in self._history[agent_key] if now - ts < CHAIN_WINDOW
             ]
 
             # Get recent tool names

@@ -3,17 +3,13 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import threading
 import time
 from collections import defaultdict
-from pathlib import Path
 from typing import Any
 
 from fastapi import FastAPI, Query, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse
-
-from ..models import Action, Severity
 
 # Cap for the by_* aggregation dicts: tool and agent names are
 # attacker-controlled, so the number of distinct keys must stay bounded.
@@ -31,6 +27,7 @@ class DashboardState:
             "denied": 0,
             "redacted": 0,
             "prompted": 0,
+            "responses_denied": 0,
         }
         self.by_severity: dict[str, int] = defaultdict(int)
         self.by_tool: dict[str, int] = defaultdict(int)
@@ -62,20 +59,24 @@ class DashboardState:
             if len(self.events) > 5000:
                 self.events = self.events[-2500:]
 
-            self.stats["total"] += 1
+            outbound = event.get("direction") == "outbound"
+            if not outbound:
+                self.stats["total"] += 1
             action = event.get("action", "allow")
             if action == "allow":
-                self.stats["allowed"] += 1
+                if not outbound:
+                    self.stats["allowed"] += 1
             elif action == "deny":
-                self.stats["denied"] += 1
+                self.stats["responses_denied" if outbound else "denied"] += 1
             elif action == "redact":
                 self.stats["redacted"] += 1
             elif action == "prompt":
                 self.stats["prompted"] += 1
 
             self._bump(self.by_severity, event.get("severity", "info"))
-            self._bump(self.by_tool, event.get("tool", "unknown"))
-            self._bump(self.by_agent, event.get("agent", "unknown"))
+            if not outbound:
+                self._bump(self.by_tool, event.get("tool", "unknown"))
+                self._bump(self.by_agent, event.get("agent", "unknown"))
             if event.get("stage"):
                 self._bump(self.by_stage, event["stage"])
 
@@ -122,12 +123,12 @@ app = FastAPI(title="mcp-firewall Dashboard", docs_url=None, redoc_url=None)
 
 
 @app.get("/", response_class=HTMLResponse)
-async def index():
+async def index() -> str:
     return DASHBOARD_HTML
 
 
 @app.get("/api/stats")
-async def api_stats():
+async def api_stats() -> dict[str, Any]:
     with state._lock:
         return {
             "stats": dict(state.stats),
@@ -141,7 +142,7 @@ async def api_stats():
 
 
 @app.get("/api/events")
-async def api_events(limit: int = Query(50, ge=1, le=1000)):
+async def api_events(limit: int = Query(50, ge=1, le=1000)) -> list[dict[str, Any]]:
     with state._lock:
         events = list(state.events[-limit:])
     # Tag replays so the client does not count them against the live stats.
@@ -149,7 +150,7 @@ async def api_events(limit: int = Query(50, ge=1, le=1000)):
 
 
 @app.websocket("/ws")
-async def websocket_endpoint(websocket: WebSocket):
+async def websocket_endpoint(websocket: WebSocket) -> None:
     await websocket.accept()
     with state._lock:
         state._websockets.append(websocket)
@@ -177,39 +178,153 @@ DASHBOARD_HTML = """<!DOCTYPE html>
 <title>mcp-firewall Dashboard</title>
 <style>
   :root {
-    --bg: #0d1117; --surface: #161b22; --border: #30363d;
-    --text: #e6edf3; --dim: #8b949e;
-    --green: #3fb950; --red: #f85149; --yellow: #d29922; --blue: #58a6ff; --orange: #db6d28;
+    --bg: #0d1117;
+    --surface: #161b22;
+    --border: #30363d;
+    --text: #e6edf3;
+    --dim: #8b949e;
+    --green: #3fb950;
+    --red: #f85149;
+    --yellow: #d29922;
+    --blue: #58a6ff;
+    --orange: #db6d28;
   }
-  * { margin: 0; padding: 0; box-sizing: border-box; }
-  body { background: var(--bg); color: var(--text); font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', monospace; }
-  .header { padding: 16px 24px; border-bottom: 1px solid var(--border); display: flex; align-items: center; gap: 12px; }
-  .header h1 { font-size: 18px; font-weight: 600; }
-  .header .badge { font-size: 12px; padding: 2px 8px; border-radius: 12px; background: var(--blue); color: var(--bg); }
-  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 12px; padding: 16px 24px; }
-  .card { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 16px; }
-  .card .label { font-size: 12px; color: var(--dim); text-transform: uppercase; letter-spacing: 0.5px; }
-  .card .value { font-size: 28px; font-weight: 700; margin-top: 4px; }
-  .card .value.green { color: var(--green); }
-  .card .value.red { color: var(--red); }
-  .card .value.yellow { color: var(--yellow); }
-  .card .value.blue { color: var(--blue); }
-  .feed { padding: 0 24px 24px; }
-  .feed h2 { font-size: 14px; color: var(--dim); margin-bottom: 8px; text-transform: uppercase; letter-spacing: 0.5px; }
-  .event-list { max-height: 60vh; overflow-y: auto; }
-  .event { display: flex; gap: 12px; padding: 8px 12px; border-bottom: 1px solid var(--border); font-size: 13px; align-items: flex-start; }
-  .event:hover { background: var(--surface); }
-  .event .time { color: var(--dim); white-space: nowrap; font-family: monospace; min-width: 80px; }
-  .event .sev { min-width: 20px; text-align: center; }
-  .event .tool { color: var(--blue); min-width: 120px; font-family: monospace; }
-  .event .agent { color: var(--dim); min-width: 100px; }
-  .event .reason { flex: 1; }
-  .event .action-allow { color: var(--green); }
-  .event .action-deny { color: var(--red); }
-  .event .action-redact { color: var(--yellow); }
-  .event .action-prompt { color: var(--orange); }
-  .connected { width: 8px; height: 8px; border-radius: 50%; background: var(--green); display: inline-block; }
-  .disconnected { width: 8px; height: 8px; border-radius: 50%; background: var(--red); display: inline-block; }
+  * {
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
+  }
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', monospace;
+  }
+  .header {
+    padding: 16px 24px;
+    border-bottom: 1px solid var(--border);
+    display: flex;
+    align-items: center;
+    gap: 12px;
+  }
+  .header h1 {
+    font-size: 18px;
+    font-weight: 600;
+  }
+  .header .badge {
+    font-size: 12px;
+    padding: 2px 8px;
+    border-radius: 12px;
+    background: var(--blue);
+    color: var(--bg);
+  }
+  .grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+    gap: 12px;
+    padding: 16px 24px;
+  }
+  .card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 16px;
+  }
+  .card .label {
+    font-size: 12px;
+    color: var(--dim);
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+  }
+  .card .value {
+    font-size: 28px;
+    font-weight: 700;
+    margin-top: 4px;
+  }
+  .card .value.green {
+    color: var(--green);
+  }
+  .card .value.red {
+    color: var(--red);
+  }
+  .card .value.yellow {
+    color: var(--yellow);
+  }
+  .card .value.blue {
+    color: var(--blue);
+  }
+  .feed {
+    padding: 0 24px 24px;
+  }
+  .feed h2 {
+    font-size: 14px;
+    color: var(--dim);
+    margin-bottom: 8px;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+  }
+  .event-list {
+    max-height: 60vh;
+    overflow-y: auto;
+  }
+  .event {
+    display: flex;
+    gap: 12px;
+    padding: 8px 12px;
+    border-bottom: 1px solid var(--border);
+    font-size: 13px;
+    align-items: flex-start;
+  }
+  .event:hover {
+    background: var(--surface);
+  }
+  .event .time {
+    color: var(--dim);
+    white-space: nowrap;
+    font-family: monospace;
+    min-width: 80px;
+  }
+  .event .sev {
+    min-width: 20px;
+    text-align: center;
+  }
+  .event .tool {
+    color: var(--blue);
+    min-width: 120px;
+    font-family: monospace;
+  }
+  .event .agent {
+    color: var(--dim);
+    min-width: 100px;
+  }
+  .event .reason {
+    flex: 1;
+  }
+  .event .action-allow {
+    color: var(--green);
+  }
+  .event .action-deny {
+    color: var(--red);
+  }
+  .event .action-redact {
+    color: var(--yellow);
+  }
+  .event .action-prompt {
+    color: var(--orange);
+  }
+  .connected {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: var(--green);
+    display: inline-block;
+  }
+  .disconnected {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: var(--red);
+    display: inline-block;
+  }
 </style>
 </head>
 <body>
@@ -218,15 +333,32 @@ DASHBOARD_HTML = """<!DOCTYPE html>
   <span class="badge">LIVE</span>
   <span id="ws-status" class="connected"></span>
 </div>
-
 <div class="grid">
-  <div class="card"><div class="label">Total Calls</div><div class="value blue" id="stat-total">0</div></div>
-  <div class="card"><div class="label">Allowed</div><div class="value green" id="stat-allowed">0</div></div>
-  <div class="card"><div class="label">Denied</div><div class="value red" id="stat-denied">0</div></div>
-  <div class="card"><div class="label">Redacted</div><div class="value yellow" id="stat-redacted">0</div></div>
-  <div class="card"><div class="label">Uptime</div><div class="value" id="stat-uptime">0s</div></div>
+  <div class="card">
+    <div class="label">Total Calls</div>
+    <div class="value blue" id="stat-total">0</div>
+  </div>
+  <div class="card">
+    <div class="label">Allowed</div>
+    <div class="value green" id="stat-allowed">0</div>
+  </div>
+  <div class="card">
+    <div class="label">Denied</div>
+    <div class="value red" id="stat-denied">0</div>
+  </div>
+  <div class="card">
+    <div class="label">Redacted</div>
+    <div class="value yellow" id="stat-redacted">0</div>
+  </div>
+  <div class="card">
+    <div class="label">Responses blocked</div>
+    <div class="value red" id="stat-responses-denied">0</div>
+  </div>
+  <div class="card">
+    <div class="label">Uptime</div>
+    <div class="value " id="stat-uptime">0</div>
+  </div>
 </div>
-
 <div class="feed">
   <h2>Live Event Feed</h2>
   <div class="event-list" id="events"></div>
@@ -234,7 +366,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
 
 <script>
 const sevEmoji = { critical: '🔴', high: '🟠', medium: '🟡', low: '🔵', info: '⚪' };
-const stats = { total: 0, allowed: 0, denied: 0, redacted: 0 };
+const stats = { total: 0, allowed: 0, denied: 0, redacted: 0, responses_denied: 0 };
 let startTime = Date.now();
 
 function updateStats() {
@@ -242,6 +374,7 @@ function updateStats() {
   document.getElementById('stat-allowed').textContent = stats.allowed;
   document.getElementById('stat-denied').textContent = stats.denied;
   document.getElementById('stat-redacted').textContent = stats.redacted;
+  document.getElementById('stat-responses-denied').textContent = stats.responses_denied;
 }
 
 function formatTime(ts) {
@@ -275,19 +408,26 @@ function addEvent(evt) {
   // Server stats are the source of truth; only count live events locally,
   // never replays (REST/WS history) — those are already in the server stats.
   if (!evt.replay) {
-    stats.total++;
-    if (action === 'deny') stats.denied++;
-    else if (action === 'redact') stats.redacted++;
-    else stats.allowed++;
+    if (evt.direction !== 'outbound') {
+      stats.total++;
+      if (action === 'deny') stats.denied++;
+      else if (action !== 'redact') stats.allowed++;
+    }
+    if (action === 'redact') stats.redacted++;
+    if (evt.direction === 'outbound' && action === 'deny') stats.responses_denied++;
     updateStats();
   }
 }
 
 function connectWS() {
   const ws = new WebSocket(`ws://${location.host}/ws`);
-  ws.onopen = () => { document.getElementById('ws-status').className = 'connected'; };
-  ws.onclose = () => { document.getElementById('ws-status').className = 'disconnected'; setTimeout(connectWS, 2000); };
-  ws.onmessage = (e) => { addEvent(JSON.parse(e.data)); };
+  ws.onopen = () => { document.getElementById('ws-status').className = 'connected';
+  };
+  ws.onclose = () => { document.getElementById('ws-status').className = 'disconnected';
+  setTimeout(connectWS, 2000);
+  };
+  ws.onmessage = (e) => { addEvent(JSON.parse(e.data));
+  };
 }
 
 // Load initial stats

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 from collections import Counter
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -27,11 +27,11 @@ class AuditData:
         self.denied = 0
         self.allowed = 0
         self.redacted = 0
-        self.by_severity: Counter = Counter()
-        self.by_stage: Counter = Counter()
-        self.by_tool: Counter = Counter()
-        self.by_agent: Counter = Counter()
-        self.by_agent_denied: Counter = Counter()
+        self.by_severity: Counter[str] = Counter()
+        self.by_stage: Counter[str] = Counter()
+        self.by_tool: Counter[str] = Counter()
+        self.by_agent: Counter[str] = Counter()
+        self.by_agent_denied: Counter[str] = Counter()
         self.has_signatures = False
         self.critical_events: list[dict[str, Any]] = []
         self.first_timestamp: float | None = None
@@ -88,8 +88,8 @@ class AuditData:
     @property
     def period(self) -> str:
         if self.first_timestamp and self.last_timestamp:
-            start = datetime.fromtimestamp(self.first_timestamp, tz=timezone.utc).strftime("%Y-%m-%d %H:%M")
-            end = datetime.fromtimestamp(self.last_timestamp, tz=timezone.utc).strftime("%Y-%m-%d %H:%M")
+            start = datetime.fromtimestamp(self.first_timestamp, tz=UTC).strftime("%Y-%m-%d %H:%M")
+            end = datetime.fromtimestamp(self.last_timestamp, tz=UTC).strftime("%Y-%m-%d %H:%M")
             return f"{start} — {end} UTC"
         return "No data"
 
@@ -100,7 +100,7 @@ def generate_dora_report(audit_path: str | Path) -> str:
     Covers: Art. 9 (ICT Risk Management), Art. 11 (Logging & Monitoring)
     """
     data = AuditData(audit_path)
-    now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+    now = datetime.now(UTC).strftime("%Y-%m-%d %H:%M UTC")
 
     report = f"""# DORA Compliance Report — AI Agent Security Controls
 ## mcp-firewall Audit Evidence
@@ -134,6 +134,9 @@ Automated detection across {len(data.by_stage)} security categories:
     for stage, count in data.by_stage.most_common():
         report += f"| {stage} | {count:,} |\n"
 
+    signing = (
+        "Ed25519 digital signatures enabled" if data.has_signatures else "Available (not enabled)"
+    )
     report += f"""
 ### 1.3 Critical Security Events
 {len(data.critical_events)} critical/high severity events detected during audit period.
@@ -143,8 +146,8 @@ Automated detection across {len(data.by_stage)} security categories:
 ### 2.1 Audit Trail Properties
 - **Format:** Append-only JSON Lines with SHA-256 hash chain
 - **Integrity:** Each entry references the hash of the previous entry
-- **Signing:** {"Ed25519 digital signatures enabled" if data.has_signatures else "Available (not enabled)"}
-- **Tamper Detection:** Hash chain verification via `mcp-firewall audit verify`
+- **Signing:** {signing}
+- **Tamper Detection:** Hash chain verification via `mcp-firewall audit`
 
 ### 2.2 Event Coverage
 All MCP tool calls are logged with:
@@ -165,12 +168,22 @@ All MCP tool calls are logged with:
         denied = data.by_agent_denied.get(agent, 0)
         report += f"| {agent} | {count:,} | {denied:,} |\n"
 
+    signing_advice = (
+        "⚠️ Enable Ed25519 audit signing for cryptographic integrity"
+        if not data.has_signatures
+        else "✅ Ed25519 audit signing is enabled"
+    )
+    event_advice = (
+        f"⚠️ Review {len(data.critical_events)} critical events"
+        if data.critical_events
+        else "✅ No critical events in audit period"
+    )
     report += f"""
 ## 3. Recommendations
 
-1. {"⚠️ Enable Ed25519 audit signing for cryptographic integrity" if not data.has_signatures else "✅ Ed25519 audit signing is enabled"}
-2. {"⚠️ Review " + str(len(data.critical_events)) + " critical events" if data.critical_events else "✅ No critical events in audit period"}
-3. Regularly verify audit chain integrity: `mcp-firewall audit verify`
+1. {signing_advice}
+2. {event_advice}
+3. Regularly verify audit chain integrity: `mcp-firewall audit`
 4. Export audit logs to SIEM for centralized monitoring
 
 ---
@@ -185,7 +198,7 @@ def generate_finma_report(audit_path: str | Path) -> str:
     Covers: Operational risk documentation for AI agent systems.
     """
     data = AuditData(audit_path)
-    now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+    now = datetime.now(UTC).strftime("%Y-%m-%d %H:%M UTC")
 
     report = f"""# FINMA Compliance Report — AI Agent Operational Risk
 ## mcp-firewall Audit Evidence
@@ -230,7 +243,7 @@ Role-based access control (RBAC) enforced per AI agent identity:
 
 - **Hash Chain:** SHA-256 linked entries, tamper-evident
 - **Retention:** Configurable, stored at `{data.path}`
-- **Verification:** `mcp-firewall audit verify`
+- **Verification:** `mcp-firewall audit`
 - **Total Entries:** {data.total:,}
 
 ## 3. Summary
@@ -251,7 +264,7 @@ def generate_soc2_report(audit_path: str | Path) -> str:
     Covers: CC6 (Logical Access), CC7 (System Operations), CC8 (Change Management)
     """
     data = AuditData(audit_path)
-    now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+    now = datetime.now(UTC).strftime("%Y-%m-%d %H:%M UTC")
 
     report = f"""# SOC 2 Type II Evidence — AI Agent Security Controls
 ## mcp-firewall Audit Evidence
@@ -291,7 +304,7 @@ audit period:
     for stage, count in data.by_stage.most_common():
         report += f"| {stage} | {count:,} |\n"
 
-    report += f"""
+    report += """
 ### CC7.2 — Monitoring Activities
 - **Real-time Dashboard:** WebSocket-based live event feed
 - **Alerting:** Webhook, Slack, Syslog (CEF) channels

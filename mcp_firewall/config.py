@@ -22,14 +22,19 @@ _CAMEL_TO_SNAKE = {
 }
 
 
-def _map_section(value: Any) -> dict:
+def _map_section(value: Any) -> dict[str, Any]:
     """Coerce a config section to a dict and map camelCase keys to snake_case.
 
     Non-dict values (e.g. ``secrets: false``) are treated as an enabled flag.
     """
     if not isinstance(value, dict):
         return {"enabled": bool(value)}
-    return {_CAMEL_TO_SNAKE.get(key, key): item for key, item in value.items()}
+    mapped: dict[str, Any] = {}
+    for key, item in value.items():
+        if not isinstance(key, str):
+            raise ValueError("Configuration keys must be strings")
+        mapped[_CAMEL_TO_SNAKE.get(key, key)] = item
+    return mapped
 
 
 def load_config(path: str | Path | None = None) -> GatewayConfig:
@@ -53,7 +58,7 @@ def load_config(path: str | Path | None = None) -> GatewayConfig:
         raw = yaml.safe_load(f) or {}
 
     # Map YAML keys to model fields
-    mapped: dict = {}
+    mapped: dict[str, Any] = {}
     mapped["version"] = raw.get("version", 1)
     mapped["default_action"] = raw.get("defaultAction", raw.get("default_action", "prompt"))
 

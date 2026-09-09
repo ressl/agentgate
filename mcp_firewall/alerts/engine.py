@@ -38,7 +38,8 @@ class AlertEvent:
 
     @property
     def title(self) -> str:
-        return f"[{self.decision.severity.value.upper()}] {self.decision.stage.value if self.decision.stage else 'unknown'}"
+        stage = self.decision.stage.value if self.decision.stage else "unknown"
+        return f"[{self.decision.severity.value.upper()}] {stage}"
 
     @property
     def message(self) -> str:
@@ -130,7 +131,7 @@ class AlertEngine:
                 logger.warning(f"Alert channel {channel.name} close failed: {e}")
 
     @staticmethod
-    def _log_task_failure(task: asyncio.Task) -> None:
+    def _log_task_failure(task: asyncio.Task[Any]) -> None:
         """Retrieve and log exceptions from fire-and-forget alert tasks."""
         if task.cancelled():
             return

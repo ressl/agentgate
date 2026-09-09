@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import re
 
-from ..base import OutboundStage
 from ...models import (
     Action,
     GatewayConfig,
@@ -13,16 +12,27 @@ from ...models import (
     Severity,
     ToolCallResponse,
 )
+from ..base import OutboundStage
+from .content import map_response_text
 
 # PII patterns: (name, regex)
 PII_PATTERNS: list[tuple[str, str]] = [
     ("Email Address", r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b"),
-    ("Phone (International)", r"\+\d{1,3}[\s.-]?\(?\d{1,4}\)?[\s.-]?\d{2,4}[\s.-]?\d{2,4}[\s.-]?\d{0,4}"),
+    (
+        "Phone (International)",
+        r"\+\d{1,3}[\s.-]?\(?\d{1,4}\)?[\s.-]?\d{2,4}[\s.-]?\d{2,4}[\s.-]?\d{0,4}",
+    ),
     ("SSN (US)", r"\b\d{3}-\d{2}-\d{4}\b"),
-    ("Credit Card", r"\b(?:4[0-9]{12}(?:[0-9]{3})?|5[1-5][0-9]{14}|3[47][0-9]{13}|6(?:011|5[0-9]{2})[0-9]{12})\b"),
+    (
+        "Credit Card",
+        r"\b(?:4[0-9]{12}(?:[0-9]{3})?|5[1-5][0-9]{14}|3[47][0-9]{13}|6(?:011|5[0-9]{2})[0-9]{12})\b",
+    ),
     ("IBAN", r"\b[A-Z]{2}\d{2}[A-Z0-9]{4,30}\b"),
     ("AHV (Swiss SSN)", r"\b756\.\d{4}\.\d{4}\.\d{2}\b"),
-    ("IPv4 Address", r"\b(?:(?:25[0-5]|2[0-4]\d|[01]?\d\d?)\.){3}(?:25[0-5]|2[0-4]\d|[01]?\d\d?)\b"),
+    (
+        "IPv4 Address",
+        r"\b(?:(?:25[0-5]|2[0-4]\d|[01]?\d\d?)\.){3}(?:25[0-5]|2[0-4]\d|[01]?\d\d?)\b",
+    ),
 ]
 
 REDACT_PLACEHOLDER = "[PII REDACTED by mcp-firewall]"
@@ -40,25 +50,17 @@ class PIIDetector(OutboundStage):
             return response, None
 
         findings: list[str] = []
-        modified = False
 
-        for i, content_item in enumerate(response.content):
-            text = content_item.get("text", "")
-            if not text:
-                continue
-
+        def scan_text(text: str) -> str:
             for name, pattern in PII_PATTERNS:
-                matches = list(re.finditer(pattern, text))
-                if matches:
+                if re.search(pattern, text):
                     findings.append(name)
 
                     if config.pii.action == Action.REDACT:
-                        for match in reversed(matches):
-                            text = text[: match.start()] + REDACT_PLACEHOLDER + text[match.end() :]
-                            modified = True
+                        text = re.sub(pattern, REDACT_PLACEHOLDER, text)
+            return text
 
-            if modified:
-                response.content[i] = {**content_item, "text": text}
+        response = map_response_text(response, scan_text)
 
         if not findings:
             return response, None
