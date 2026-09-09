@@ -13,7 +13,7 @@ from pydantic import ValidationError
 from rich.console import Console
 
 from ..dashboard.app import state as dashboard_state
-from ..models import Action, GatewayConfig, ToolCallRequest, ToolCallResponse
+from ..models import Action, EventPhase, GatewayConfig, ToolCallRequest, ToolCallResponse
 from ..pipeline.outbound.content import ResponseContentError
 from ..pipeline.runner import PipelineRunner
 
@@ -38,7 +38,11 @@ class StdioProxy:
         self.config = config
         # stdin is the JSON-RPC protocol channel here — interactive approval
         # prompts are impossible, so approval requests fail closed.
-        self.pipeline = PipelineRunner(config, stdin_available=False)
+        self.pipeline = PipelineRunner(
+            config,
+            stdin_available=False,
+            event_observer=dashboard_state.add_security_event,
+        )
         self.console = console or Console(stderr=True)
         self._server_proc: asyncio.subprocess.Process | None = None
         # Agent identity captured from the initialize handshake (clientInfo)
@@ -46,6 +50,7 @@ class StdioProxy:
         self._pending_requests: dict[tuple[type, Any], ToolCallRequest] = {}
         self._pending_sizes: dict[tuple[type, Any], int] = {}
         self._pending_bytes = 0
+        self._outgoing_request: ToolCallRequest | None = None
 
     async def run(self, server_command: list[str]) -> int:
         """Run the protocol streams; diagnostic EOF does not end a session."""
@@ -88,6 +93,7 @@ class StdioProxy:
                 if not task.done():
                     task.cancel()
             await asyncio.gather(*tasks, return_exceptions=True)
+            self._finish_pending()
             if diagnostics.done() and not diagnostics.cancelled() and diagnostics.exception():
                 self.console.print("[yellow]Server diagnostic forwarding stopped[/yellow]")
             if self._server_proc.returncode is None:
@@ -100,6 +106,7 @@ class StdioProxy:
                 except TimeoutError:
                     self._server_proc.kill()
                     await self._server_proc.wait()
+            await asyncio.to_thread(self.pipeline.close)
             self._pending_requests.clear()
             self._pending_sizes.clear()
             self._pending_bytes = 0
@@ -148,9 +155,34 @@ class StdioProxy:
                 message = await self._intercept_request(line)
                 if message is not None:
                     writer.write(message + b"\n")
+                    request = self._outgoing_request
+                    if request is not None:
+                        self.pipeline.events.emit(request, EventPhase.REQUEST_FORWARDED)
+                        self._outgoing_request = None
+                        if request.protocol_id is None:
+                            self.pipeline.events.emit(
+                                request,
+                                EventPhase.REQUEST_UNKNOWN,
+                                reason="Notification forwarded without response correlation",
+                            )
                     await writer.drain()
         finally:
             transport.close()
+
+    def _finish_pending(self) -> None:
+        pending = {request.call_id: request for request in self._pending_requests.values()}
+        if self._outgoing_request is not None:
+            pending[self._outgoing_request.call_id] = self._outgoing_request
+        for request in pending.values():
+            self.pipeline.events.emit(
+                request,
+                EventPhase.REQUEST_UNKNOWN,
+                reason="Connection ended without a complete response; execution is unknown",
+            )
+        self._pending_requests.clear()
+        self._pending_sizes.clear()
+        self._pending_bytes = 0
+        self._outgoing_request = None
 
     async def _proxy_server_to_client(self) -> None:
         if self._server_proc is None or self._server_proc.stdout is None:
@@ -214,6 +246,7 @@ class StdioProxy:
         Malformed messages are logged and skipped — they must never crash
         the proxy.
         """
+        self._outgoing_request = None
         try:
             msg = json.loads(raw)
         except (ValueError, RecursionError):
@@ -259,6 +292,7 @@ class StdioProxy:
         try:
             request = ToolCallRequest(
                 id=str(msg.get("id", "")),
+                protocol_id=msg.get("id"),
                 tool_name=params.get("name", ""),
                 arguments=params.get("arguments", {}),
                 agent_id=self._agent_id,
@@ -274,17 +308,6 @@ class StdioProxy:
 
         if decision and decision.action == Action.DENY:
             self.console.print(f"  [red]✗ DENIED[/red] {request.tool_name}: {decision.reason}")
-            dashboard_state.add_event(
-                {
-                    "action": "deny",
-                    "tool": request.tool_name,
-                    "agent": request.agent_id,
-                    "reason": decision.reason,
-                    "severity": decision.severity.value,
-                    "stage": decision.stage.value if decision.stage else None,
-                    "timestamp": request.timestamp,
-                }
-            )
             # Return JSON-RPC error directly to client (notifications get none)
             if "id" in msg:
                 self._send_error(
@@ -298,17 +321,7 @@ class StdioProxy:
             )
 
         self.console.print(f"  [green]✓ ALLOW[/green]  {request.tool_name}")
-        dashboard_state.add_event(
-            {
-                "action": "allow",
-                "tool": request.tool_name,
-                "agent": request.agent_id,
-                "reason": "",
-                "severity": "info",
-                "stage": None,
-                "timestamp": request.timestamp,
-            }
-        )
+        self._outgoing_request = request
         if key is not None:
             self._pending_requests[key] = request
             self._pending_sizes[key] = len(raw)
@@ -331,6 +344,8 @@ class StdioProxy:
             return raw
         key = self._request_key(msg.get("id"))
         request = self._pending_requests.pop(key, None) if key is not None else None
+        if request is not None and self._outgoing_request is request:
+            self._outgoing_request = None
         if key is not None:
             self._pending_bytes -= self._pending_sizes.pop(key, 0)
         result = msg.get("result")
@@ -340,9 +355,15 @@ class StdioProxy:
         ):
             return raw
         if request is not None and "error" in msg:
+            self.pipeline.events.emit(request, EventPhase.RESPONSE_RECEIVED)
+            self.pipeline.events.emit(
+                request, EventPhase.RESPONSE_ERROR, reason="Server returned a protocol error"
+            )
             return raw
         request = request or ToolCallRequest(
             id=str(msg.get("id", "")),
+            protocol_id=msg.get("id"),
+            correlated=False,
             tool_name="(unmatched response)",
             agent_id=self._agent_id,
         )
@@ -366,6 +387,10 @@ class StdioProxy:
                 is_error=result.get("isError", False),
             )
         except (ValueError, TypeError, RecursionError):
+            self.pipeline.events.emit(request, EventPhase.RESPONSE_RECEIVED)
+            self.pipeline.events.emit(
+                request, EventPhase.RESPONSE_DENIED, reason="Malformed tool result"
+            )
             self.console.print("[red]Invalid tool result blocked[/red]")
             return self._error_bytes(msg.get("id"), -32603, "Invalid tool result from server")
 
@@ -375,24 +400,6 @@ class StdioProxy:
             return self._error_bytes(msg.get("id"), -32603, "Tool result cannot be safely scanned")
 
         deny = next((d for d in decisions if d.action == Action.DENY), None)
-        if decisions:
-            decision = deny or next(
-                (d for d in decisions if d.action == Action.REDACT), decisions[0]
-            )
-            dashboard_state.add_event(
-                {
-                    "direction": "outbound",
-                    "request_id": msg.get("id"),
-                    "action": decision.action.value,
-                    "tool": request.tool_name,
-                    "agent": request.agent_id,
-                    "reason": "; ".join(d.reason for d in decisions),
-                    "severity": max(d.severity for d in decisions).value,
-                    "stage": decision.stage.value,
-                    "findings": [d.model_dump(mode="json") for d in decisions],
-                    "timestamp": response.timestamp,
-                }
-            )
         if deny:
             self.console.print(f"[red]Blocked response:[/red] {deny.reason}")
             # Rebuild the envelope too: no original output survives a deny.

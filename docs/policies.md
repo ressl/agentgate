@@ -158,6 +158,11 @@ archived generation; see [audit integrity](compliance.md#audit-trail-integrity).
 Per-agent rate history is retained only for configured limits. Newly enabled
 agent limits begin with the calls observed after they are enabled.
 
+The optional `events:` section exports versioned lifecycle observations through a
+bounded background webhook worker. It is separate from severity-filtered `alerts:`.
+See [integration events](integration-events.md) for configuration, authentication,
+correlation, delivery counters, and event-setting reload requirements.
+
 ## Egress checks and response scanning
 
 Egress checks normalize private IPv4/IPv6 literals, localhost names, and trailing

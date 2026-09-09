@@ -19,6 +19,10 @@ _CAMEL_TO_SNAKE = {
     "minSeverity": "min_severity",
     "webhookUrl": "webhook_url",
     "feedDir": "feed_dir",
+    "queueSize": "queue_size",
+    "shutdownTimeout": "shutdown_timeout",
+    "timeoutSeconds": "timeout_seconds",
+    "maxRetries": "max_retries",
 }
 
 
@@ -112,6 +116,12 @@ def load_config(path: str | Path | None = None) -> GatewayConfig:
         tf = raw.get("threatFeed", raw.get("threat_feed", {}))
         mapped["threat_feed"] = _map_section(tf)
 
+    if "events" in raw:
+        events = _map_section(raw["events"])
+        if "webhook" in events and events["webhook"] is not None:
+            events["webhook"] = _map_section(events["webhook"])
+        mapped["events"] = events
+
     mapped["agents"] = raw.get("agents", {})
     mapped["rules"] = raw.get("rules", [])
     mapped["audit"] = raw.get("audit", {})
@@ -159,6 +169,16 @@ responseScanning:
 #   syslog:
 #     host: localhost
 #     port: 514
+
+# Lifecycle events: optional, independent of alert severity filtering
+# Docs: docs/integration-events.md
+# events:
+#   enabled: true
+#   queueSize: 256
+#   webhook:
+#     url: http://127.0.0.1:8766/events
+#     headers:
+#       Authorization: "Bearer <your-random-receiver-token>"
 
 # Agent-specific policies (RBAC)
 # agents:

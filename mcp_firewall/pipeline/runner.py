@@ -11,8 +11,10 @@ from ..alerts.slack import SlackChannel
 from ..alerts.syslog import SyslogChannel
 from ..alerts.webhook import WebhookChannel
 from ..audit.logger import AuditLogger
+from ..events import DeliveryStats, EventEmitter, EventHandler
 from ..models import (
     Action,
+    EventPhase,
     GatewayConfig,
     PipelineDecision,
     PipelineStage,
@@ -29,6 +31,7 @@ from .inbound.kill_switch import KillSwitch
 from .inbound.policy import PolicyEngine
 from .inbound.rate_limiter import RateLimiter
 from .inbound.threat_feed import ThreatFeedStage
+from .outbound.content import ResponseContentError
 from .outbound.pii import PIIDetector
 from .outbound.secrets import SecretScanner
 
@@ -68,9 +71,13 @@ class PipelineRunner:
         config: GatewayConfig,
         auto_approve: bool = False,
         stdin_available: bool = True,
+        *,
+        event_handler: EventHandler | None = None,
+        event_observer: EventHandler | None = None,
     ) -> None:
         self.config = config
         self.audit = AuditLogger(config)
+        self.events = EventEmitter(config.events, handler=event_handler, observer=event_observer)
 
         # Inbound stages (order matters!)
         self._kill_switch = KillSwitch()
@@ -111,7 +118,45 @@ class PipelineRunner:
         if self._alerts is not None:
             self._alerts.process(request, decision)
 
+    def _audit_decision(
+        self,
+        request: ToolCallRequest,
+        decision: PipelineDecision | None,
+        latency: float,
+        *,
+        outbound: bool = False,
+    ) -> None:
+        event = self.events.emit(
+            request,
+            EventPhase.RESPONSE_FINDING if outbound else EventPhase.POLICY_DECISION,
+            decision,
+        )
+        self.audit.log(request, decision, latency, security_event=event)
+
+    def _finish_inbound(
+        self,
+        request: ToolCallRequest,
+        decision: PipelineDecision | None,
+    ) -> PipelineDecision | None:
+        phase = (
+            EventPhase.REQUEST_DENIED
+            if decision and decision.action == Action.DENY
+            else EventPhase.REQUEST_ALLOWED
+        )
+        self.events.emit(request, phase, decision)
+        return decision
+
     def evaluate_inbound(self, request: ToolCallRequest) -> PipelineDecision | None:
+        self.events.emit(request, EventPhase.REQUEST_RECEIVED)
+        try:
+            return self._finish_inbound(request, self._evaluate_inbound(request))
+        except BaseException:
+            self.events.emit(
+                request, EventPhase.REQUEST_UNKNOWN, reason="Admission did not complete"
+            )
+            raise
+
+    def _evaluate_inbound(self, request: ToolCallRequest) -> PipelineDecision | None:
         """Run all inbound stages. Returns first blocking decision."""
         start = time.time()
         logged = False
@@ -124,14 +169,14 @@ class PipelineRunner:
 
             if decision.action == Action.DENY:
                 latency = (time.time() - start) * 1000
-                self.audit.log(request, decision, latency)
+                self._audit_decision(request, decision, latency)
                 self._fire_alerts(request, decision)
                 return decision
 
             if decision.action == Action.ALERT:
                 # Non-blocking: audit and alert, then continue pipeline
                 latency = (time.time() - start) * 1000
-                self.audit.log(request, decision, latency)
+                self._audit_decision(request, decision, latency)
                 self._fire_alerts(request, decision)
                 logged = True
                 continue
@@ -140,7 +185,7 @@ class PipelineRunner:
                 # Run human approval
                 approval = self._approval.evaluate(request, self.config)
                 latency = (time.time() - start) * 1000
-                self.audit.log(request, approval, latency)
+                self._audit_decision(request, approval, latency)
                 logged = True
                 if approval.action == Action.DENY:
                     self._fire_alerts(request, approval)
@@ -156,10 +201,20 @@ class PipelineRunner:
         # All stages passed — don't log twice if approval was already logged
         if not logged:
             latency = (time.time() - start) * 1000
-            self.audit.log(request, allowed_decision, latency)
+            self._audit_decision(request, allowed_decision, latency)
         return None
 
     async def aevaluate_inbound(self, request: ToolCallRequest) -> PipelineDecision | None:
+        self.events.emit(request, EventPhase.REQUEST_RECEIVED)
+        try:
+            return self._finish_inbound(request, await self._aevaluate_inbound(request))
+        except BaseException:
+            self.events.emit(
+                request, EventPhase.REQUEST_UNKNOWN, reason="Admission did not complete"
+            )
+            raise
+
+    async def _aevaluate_inbound(self, request: ToolCallRequest) -> PipelineDecision | None:
         """Async variant of evaluate_inbound — approval runs off the event loop."""
         start = time.time()
         logged = False
@@ -186,14 +241,14 @@ class PipelineRunner:
 
             if decision.action == Action.DENY:
                 latency = (time.time() - start) * 1000
-                self.audit.log(request, decision, latency)
+                self._audit_decision(request, decision, latency)
                 self._fire_alerts(request, decision)
                 return decision
 
             if decision.action == Action.ALERT:
                 # Non-blocking: audit and alert, then continue pipeline
                 latency = (time.time() - start) * 1000
-                self.audit.log(request, decision, latency)
+                self._audit_decision(request, decision, latency)
                 self._fire_alerts(request, decision)
                 logged = True
                 continue
@@ -202,7 +257,7 @@ class PipelineRunner:
                 # Run human approval off the event loop
                 approval = await self._approval.aevaluate(request, self.config)
                 latency = (time.time() - start) * 1000
-                self.audit.log(request, approval, latency)
+                self._audit_decision(request, approval, latency)
                 logged = True
                 if approval.action == Action.DENY:
                     self._fire_alerts(request, approval)
@@ -217,10 +272,44 @@ class PipelineRunner:
         # All stages passed — don't log twice if approval was already logged
         if not logged:
             latency = (time.time() - start) * 1000
-            self.audit.log(request, allowed_decision, latency)
+            self._audit_decision(request, allowed_decision, latency)
         return None
 
     def scan_outbound(
+        self, request: ToolCallRequest, response: ToolCallResponse
+    ) -> tuple[ToolCallResponse, list[PipelineDecision]]:
+        self.events.emit(request, EventPhase.RESPONSE_RECEIVED, response_is_error=response.is_error)
+        try:
+            response, decisions = self._scan_outbound(request, response)
+        except ResponseContentError:
+            self.events.emit(
+                request, EventPhase.RESPONSE_DENIED, reason="Response cannot be safely scanned"
+            )
+            raise
+        except BaseException:
+            self.events.emit(
+                request, EventPhase.REQUEST_UNKNOWN, reason="Response scanning did not complete"
+            )
+            raise
+        strongest = next((d for d in decisions if d.action == Action.DENY), None)
+        strongest = strongest or next((d for d in decisions if d.action == Action.REDACT), None)
+        strongest = strongest or next(iter(decisions), None)
+        phase = EventPhase.RESPONSE_ALLOWED
+        if strongest is not None:
+            if strongest.action == Action.DENY:
+                phase = EventPhase.RESPONSE_DENIED
+            elif strongest.action == Action.REDACT:
+                phase = EventPhase.RESPONSE_REDACTED
+            strongest = strongest.model_copy(
+                update={
+                    "severity": max(d.severity for d in decisions),
+                    "reason": "; ".join(d.reason for d in decisions),
+                }
+            )
+        self.events.emit(request, phase, strongest, response_is_error=response.is_error)
+        return response, decisions
+
+    def _scan_outbound(
         self, request: ToolCallRequest, response: ToolCallResponse
     ) -> tuple[ToolCallResponse, list[PipelineDecision]]:
         """Run all outbound stages. Returns (modified response, decisions)."""
@@ -232,7 +321,7 @@ class PipelineRunner:
             if decision:
                 decisions.append(decision)
                 latency = (time.time() - start) * 1000
-                self.audit.log(request, decision, latency)
+                self._audit_decision(request, decision, latency, outbound=True)
                 self._fire_alerts(request, decision)
                 if decision.action == Action.DENY:
                     break
@@ -245,8 +334,10 @@ class PipelineRunner:
         feed = _build_threat_feed(config)
         alerts = _build_alert_engine(config)
         try:
+            self.events.reconfigure(config.events)
             audit = self.audit.reconfigured(config)
         except Exception:
+            self.events.reconfigure(self.config.events)
             if alerts is not None:
                 alerts.close()
             raise
@@ -256,3 +347,8 @@ class PipelineRunner:
         self.audit = audit
         self._alerts = alerts
         self._threat_feed.feed = feed
+
+    def close(self) -> DeliveryStats:
+        if self._alerts is not None:
+            self._alerts.close()
+        return self.events.close()

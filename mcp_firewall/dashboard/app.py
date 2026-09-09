@@ -11,6 +11,8 @@ from typing import Any
 from fastapi import FastAPI, Query, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse
 
+from ..models import EventPhase, SecurityEvent
+
 # Cap for the by_* aggregation dicts: tool and agent names are
 # attacker-controlled, so the number of distinct keys must stay bounded.
 MAX_AGG_KEYS = 1000
@@ -53,6 +55,27 @@ class DashboardState:
         else:
             counter["other"] += 1
 
+    def add_security_event(self, event: SecurityEvent) -> None:
+        """Display final decisions without counting lifecycle observations as calls."""
+        if event.phase not in {
+            EventPhase.REQUEST_ALLOWED,
+            EventPhase.REQUEST_DENIED,
+            EventPhase.RESPONSE_REDACTED,
+            EventPhase.RESPONSE_DENIED,
+        }:
+            return
+        payload = event.model_dump(mode="json")
+        payload["direction"] = (
+            "outbound"
+            if event.phase
+            in {
+                EventPhase.RESPONSE_REDACTED,
+                EventPhase.RESPONSE_DENIED,
+            }
+            else "inbound"
+        )
+        self.add_event(payload)
+
     def add_event(self, event: dict[str, Any]) -> None:
         with self._lock:
             self.events.append(event)
@@ -76,7 +99,7 @@ class DashboardState:
             self._bump(self.by_severity, event.get("severity", "info"))
             if not outbound:
                 self._bump(self.by_tool, event.get("tool", "unknown"))
-                self._bump(self.by_agent, event.get("agent", "unknown"))
+            self._bump(self.by_agent, event.get("agent", "unknown"))
             if event.get("stage"):
                 self._bump(self.by_stage, event["stage"])
 

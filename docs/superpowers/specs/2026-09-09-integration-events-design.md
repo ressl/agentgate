@@ -68,13 +68,27 @@ result. No package release or production deployment is part of this change.
 - [x] Compare minimal existing-webhook use, generic integration, and full sidecar
   control; choose the generic event interface described above.
 - [x] Review this design for missing boundaries and contradictory guarantees.
-- [ ] Implement event models, sanitization, delivery, and configuration.
-- [ ] Connect pipeline, decision audit, proxy lifecycle, and dashboard adapter.
-- [ ] Implement SDK contexts, safe defaults, async APIs, and cleanup.
-- [ ] Add adapter example, schema, migration documentation, and regressions.
-- [ ] Run checks and record the verified outcome.
+- [x] Implement event models, sanitization, delivery, and configuration.
+- [x] Connect pipeline, decision audit, proxy lifecycle, and dashboard adapter.
+- [x] Implement SDK contexts, safe defaults, async APIs, and cleanup.
+- [x] Add adapter example, schema, migration documentation, and regressions.
+- [x] Run checks and record the verified outcome.
 
-The referenced writing-plans and test-driven-development skills are unavailable in
-the installed skill roots. This checklist and focused regression-first checks are
-the local workflow fallback. User approval of the presented design was given before
-implementation; this document records that approved scope.
+## Verification on 9 September 2026
+
+All 406 tests pass on Python 3.11.15 and 3.14.7, including 33 new cases. Application,
+new tests, and receiver/SDK examples pass Ruff and formatting checks (46 files);
+strict mypy passes for all 41 application source files. Source and wheel builds
+pass. An isolated installed-wheel smoke verifies async context correlation,
+structured redaction, sanitized events, audit correlation, and fail-closed defaults.
+Staged secret scanning and the public-boundary check found no leaks.
+
+The real subprocess/HTTP test verifies reversed responses for integer/string MCP
+IDs and unknown outcomes after server disconnect. Signed audit tests verify the
+embedded event, and receiver tests cover authentication, version/schema rejection,
+size limits, and deduplication. Delivery tests cover bounded retries, no response
+body buffering, queue overflow, slow/failed observers, and shutdown deadlines.
+
+The implementation and its limits are documented in
+[integration-events.md](../../integration-events.md) and
+[sdk-migration.md](../../sdk-migration.md).

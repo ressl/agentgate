@@ -177,19 +177,34 @@ mcp-firewall works as a Python library, not just an MCP proxy. Use it with OpenC
 ```python
 from mcp_firewall.sdk import Gateway
 
-gw = Gateway()  # or Gateway(config_path="mcp-firewall.yaml")
-
-# Check before executing a tool
-decision = gw.check("exec", {"command": "rm -rf /"}, agent="my-agent")
-if decision.blocked:
-    print(f"Blocked: {decision.reason}")
-
-# Scan tool output for leaked secrets
-result = gw.scan_response("AWS_KEY=AKIAIOSFODNN7EXAMPLE")
-print(result.content)  # "AWS_KEY=[REDACTED by mcp-firewall]"
+with Gateway(config_path="mcp-firewall.yaml") as gw:
+    decision = gw.check("read_file", {"path": "/tmp/example.txt"}, agent="my-agent")
+    if decision.blocked:
+        print(f"Blocked: {decision.reason}")
+    else:
+        # Illustrative output: the SDK itself never executes the tool.
+        output = "AWS_KEY=AKIAIOSFODNN7EXAMPLE"
+        result = gw.scan_response(output, context=decision.context)
+        print(result.content)  # "AWS_KEY=[REDACTED by mcp-firewall]"
 ```
 
 See [examples/openclaw_integration.py](examples/openclaw_integration.py) for a full example.
+
+SDK approval requests now fail closed by default, and configured audit logging is
+respected. See the [SDK migration guide](docs/sdk-migration.md) for changed defaults,
+async methods, structured responses, and resource cleanup.
+
+## Integration events
+
+Export versioned lifecycle events to a local desktop companion or another HTTP
+receiver. Events correlate admission and response decisions using session and call
+IDs, with bounded background delivery and sanitized metadata. Audit entries and
+the dashboard use the same event model. Export never grants permission or proves
+that a tool executed.
+
+See [the integration contract](docs/integration-events.md),
+[JSON schema](docs/integration-events.schema.json), and
+[example receiver](examples/event_receiver.py).
 
 ## See Also
 
