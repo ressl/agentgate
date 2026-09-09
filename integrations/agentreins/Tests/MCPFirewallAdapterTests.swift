@@ -158,6 +158,51 @@ extension MCPFirewallAdapterTests {
         XCTAssertTrue(final.events.contains { $0.tool == "lease_lost" && $0.phase == .request_denied })
         XCTAssertFalse(final.events.contains { $0.tool != "status" && $0.phase == .request_forwarded })
         await observer.close()
+        await sight.connect(endpoint: address, token: token)
+        XCTAssertTrue(sight.connected)
+        XCTAssertEqual(sight.workspace?.enabled, true)
+        try signal("workspace-ready")
+        try await wait { sight.pending.contains { $0.tool == "edit_workspace" } }
+        await sight.decide(try XCTUnwrap(sight.pending.first { $0.tool == "edit_workspace" }), allow: true)
+        try await wait { sight.workspace?.snapshots.first?.file_count == 1 }
+        let snapshot = try XCTUnwrap(sight.workspace?.snapshots.first)
+        XCTAssertTrue(snapshot.files.isEmpty, "List must omit file details")
+        await sight.inspect(snapshot)
+        let detail = try XCTUnwrap(sight.workspaceDetail)
+        await sight.inspect(detail, file: try XCTUnwrap(detail.files.first))
+        let preview = try XCTUnwrap(sight.filePreview)
+        XCTAssertTrue(preview.diff.contains("-original"))
+        XCTAssertTrue(preview.diff.contains("+tool change"))
+        await sight.restoreFile(preview)
+        XCTAssertTrue(sight.workspaceStatus.contains("Selected file restored"))
+        XCTAssertEqual(try String(contentsOf: root.appendingPathComponent("workspace/example.txt"), encoding: .utf8), "original\n")
+        let recovery = try MCPFirewallClient(baseURL: url, token: token)
+        do { _ = try await recovery.restore(preview); XCTFail("Restore replay accepted") }
+        catch MCPFirewallError.http(409) { }
+        try signal("restore-verified")
+        try await wait { FileManager.default.fileExists(atPath: root.appendingPathComponent("restore-ack").path) }
+        try signal("second-edit-ready")
+        try await wait { sight.pending.contains { $0.tool == "edit_workspace" } }
+        await sight.decide(try XCTUnwrap(sight.pending.first { $0.tool == "edit_workspace" }), allow: true)
+        try await wait { sight.workspace?.snapshots.first?.id != snapshot.id && sight.workspace?.snapshots.first?.state == "complete" }
+        let second = try XCTUnwrap(sight.workspace?.snapshots.first)
+        await sight.inspect(second)
+        let secondDetail = try XCTUnwrap(sight.workspaceDetail)
+        await sight.inspect(secondDetail, file: try XCTUnwrap(secondDetail.files.first))
+        let secondPreview = try XCTUnwrap(sight.filePreview)
+        try "later user edit\n".write(to: root.appendingPathComponent("workspace/example.txt"), atomically: true, encoding: .utf8)
+        await sight.restoreFile(secondPreview)
+        XCTAssertTrue(sight.workspaceStatus.contains("Restore conflict"))
+        XCTAssertEqual(try String(contentsOf: root.appendingPathComponent("workspace/example.txt"), encoding: .utf8), "later user edit\n")
+        XCTAssertFalse(recorded.contains { $0.command?.contains("tool change") == true })
+        try signal("conflict-verified")
+        try await wait { FileManager.default.fileExists(atPath: root.appendingPathComponent("conflict-ack").path) }
+        await sight.discardSnapshot(secondDetail)
+        XCTAssertFalse(sight.workspace?.snapshots.contains { $0.id == second.id } ?? true)
+        await recovery.close()
+        await sight.disconnect()
+        XCTAssertNil(sight.filePreview)
+        XCTAssertNil(sight.workspace)
         try signal("finished")
     }
 }
@@ -206,5 +251,18 @@ extension MCPFirewallAdapterTests {
         XCTAssertTrue(incident.title.contains("Response blocked"))
         XCTAssertFalse(incident.causalChain.contains { $0.id == "agent" && $0.captured })
         XCTAssertFalse(incident.causalChain.contains { $0.id == "kernel" && $0.captured })
+    }
+}
+
+extension MCPFirewallAdapterTests {
+    func testWorkspaceModelsRejectUnsafePathsAndInvalidCounts() throws {
+        for path in ["../escape", "/absolute", "a//b", ".git/config", "a\nspoof"] {
+            XCTAssertThrowsError(try MCPFirewallFileChange(id: UUID(), path: path, kind: "modified", restored: false).validate())
+        }
+        XCTAssertNoThrow(try MCPFirewallFileChange(id: UUID(), path: "src/example.swift", kind: "deleted", restored: false).validate())
+        let invalid = MCPFirewallSnapshot(id: UUID(), revision: UUID(), session_id: UUID(), call_id: UUID(),
+            tool: "test", created_at: 1, state: "complete", message: "", files: [], file_count: 3)
+        XCTAssertThrowsError(try invalid.validate(detail: true))
+        XCTAssertThrowsError(try MCPFirewallWorkspace(enabled: false, workspace: "/private", busy: false, snapshots: []).validate())
     }
 }

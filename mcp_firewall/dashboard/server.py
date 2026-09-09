@@ -9,8 +9,10 @@ import threading
 import uvicorn
 
 from ..approvals import ApprovalBroker
+from ..workspace import WorkspaceSnapshots
 from .app import app, state
 from .approvals import LOOPBACK_HOSTS, configure_approvals
+from .workspace import configure_workspace
 
 logger = logging.getLogger("mcp_firewall.dashboard")
 
@@ -21,11 +23,15 @@ def start_dashboard(
     *,
     approval_broker: ApprovalBroker | None = None,
     token: str | None = None,
+    workspace_snapshots: WorkspaceSnapshots | None = None,
 ) -> threading.Thread:
     """Start the dashboard in a background thread."""
     if approval_broker is not None and host not in LOOPBACK_HOSTS:
         raise ValueError("Approval dashboard must bind to loopback")
+    if workspace_snapshots is not None and approval_broker is None:
+        raise ValueError("Workspace snapshots require an authenticated approval controller")
     configure_approvals(approval_broker, token)
+    configure_workspace(workspace_snapshots)
     config = uvicorn.Config(app, host=host, port=port, log_level="warning")
     server = uvicorn.Server(config)
 

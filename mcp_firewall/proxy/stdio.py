@@ -15,9 +15,20 @@ from rich.console import Console
 
 from ..approvals import ApprovalBroker
 from ..dashboard.app import state as dashboard_state
-from ..models import Action, EventPhase, GatewayConfig, ToolCallRequest, ToolCallResponse
+from ..models import (
+    Action,
+    EventPhase,
+    GatewayConfig,
+    PipelineDecision,
+    PipelineStage,
+    Severity,
+    ToolCallRequest,
+    ToolCallResponse,
+)
 from ..pipeline.outbound.content import ResponseContentError
 from ..pipeline.runner import PipelineRunner
+from ..workspace import WorkspaceSnapshots
+from ..workspace.files import WorkspaceError
 
 # Maximum size of a single newline-delimited JSON-RPC message
 MAX_MESSAGE_SIZE = 10 * 1024 * 1024  # 10 MB
@@ -58,8 +69,10 @@ class StdioProxy:
         console: Console | None = None,
         *,
         approval_broker: ApprovalBroker | None = None,
+        snapshots: WorkspaceSnapshots | None = None,
     ) -> None:
         self.config = config
+        self.snapshots = snapshots
         # stdin is the JSON-RPC protocol channel here — interactive approval
         # prompts are impossible; approval requires an explicitly supplied broker.
         self.pipeline = PipelineRunner(
@@ -202,6 +215,8 @@ class StdioProxy:
         if self._outgoing_request is not None:
             pending[self._outgoing_request.call_id] = self._outgoing_request
         for request in pending.values():
+            if self.snapshots is not None:
+                self.snapshots.finish(request.call_id, complete=False)
             self.pipeline.events.emit(
                 request,
                 EventPhase.REQUEST_UNKNOWN,
@@ -348,6 +363,30 @@ class StdioProxy:
                 f"  [yellow]? PROMPT[/yellow] {request.tool_name}: {decision.reason}"
             )
 
+        if self.snapshots is not None:
+            try:
+                if key is None:
+                    raise WorkspaceError("Snapshot mode requires a correlated request ID")
+                await asyncio.to_thread(
+                    self.snapshots.begin,
+                    self.pipeline.events.session_id,
+                    request.call_id,
+                    request.tool_name,
+                )
+            except WorkspaceError as exc:
+                self.pipeline.deny_before_forward(
+                    request,
+                    PipelineDecision(
+                        stage=PipelineStage.POLICY,
+                        action=Action.DENY,
+                        severity=Severity.MEDIUM,
+                        reason=f"Workspace snapshot admission: {exc}",
+                    ),
+                )
+                if key is not None:
+                    self._send_error(msg["id"], -32000, f"[mcp-firewall] Blocked: {exc}")
+                return None
+
         self.console.print(f"  [green]✓ ALLOW[/green]  {request.tool_name}")
         self._outgoing_request = request
         if key is not None:
@@ -376,6 +415,8 @@ class StdioProxy:
             self._outgoing_request = None
         if key is not None:
             self._pending_bytes -= self._pending_sizes.pop(key, 0)
+        if request is not None and self.snapshots is not None:
+            await asyncio.to_thread(self.snapshots.finish, request.call_id)
         result = msg.get("result")
         if request is None and (
             not isinstance(result, dict)

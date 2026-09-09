@@ -60,6 +60,10 @@ struct MCPFirewallView: View {
                         }
                     }
                     Divider()
+                    if sight.connected {
+                        MCPFirewallWorkspaceView(sight: sight)
+                        Divider()
+                    }
                     Text("Observed firewall activity").font(.headline)
                     Text("Protocol evidence does not prove file changes or successful execution.")
                         .font(.caption).foregroundStyle(.secondary)

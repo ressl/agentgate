@@ -27,6 +27,8 @@ import json, os, sys
 from pathlib import Path
 for line in sys.stdin:
     request = json.loads(line)
+    if request['params']['name'] == 'edit_workspace':
+        (Path(sys.argv[2]) / 'example.txt').write_text('tool change\n')
     with Path(sys.argv[1]).open('a') as output:
         output.write(line)
     assert 'MCP_FIREWALL_DASHBOARD_TOKEN' not in os.environ
@@ -60,6 +62,12 @@ def fault_server(root: Path):
             except (BrokenPipeError, ConnectionResetError):
                 pass
 
+        def handle(self):
+            try:
+                super().handle()
+            except ConnectionResetError:
+                pass  # Rejecting an oversized response may reset the fixture socket.
+
         def log_message(self, *args):
             pass
 
@@ -91,6 +99,9 @@ async def verify(checkout: Path, root: Path, fault_url: str) -> None:
     with socket.socket() as listener:
         listener.bind(("127.0.0.1", 0))
         port = listener.getsockname()[1]
+    workspace = root / "workspace"
+    workspace.mkdir()
+    (workspace / "example.txt").write_text("original\n")
     token = secrets.token_urlsafe(32)
     config = root / "firewall.yaml"
     config.write_text(
@@ -105,6 +116,8 @@ async def verify(checkout: Path, root: Path, fault_url: str) -> None:
         "--config",
         str(config),
         "--dashboard-approvals",
+        "--snapshot-workspace",
+        str(workspace),
         "--dashboard-port",
         str(port),
         "--",
@@ -112,6 +125,7 @@ async def verify(checkout: Path, root: Path, fault_url: str) -> None:
         "-c",
         SERVER,
         str(root / "executed.jsonl"),
+        str(workspace),
         cwd=ROOT,
         env={**os.environ, "MCP_FIREWALL_DASHBOARD_TOKEN": token},
         stdin=asyncio.subprocess.PIPE,
@@ -196,16 +210,26 @@ async def verify(checkout: Path, root: Path, fault_url: str) -> None:
         assert "error" in await call(5, "lease_lost")
         await wait_for("lease-dropped")
         (root / "lease-verified").touch()
+        await wait_for("workspace-ready")
+        assert "result" in await call(6, "edit_workspace")
+        await wait_for("restore-verified")
+        assert (workspace / "example.txt").read_text() == "original\n"
+        (root / "restore-ack").touch()
+        await wait_for("second-edit-ready")
+        assert "result" in await call(7, "edit_workspace")
+        await wait_for("conflict-verified")
+        assert (workspace / "example.txt").read_text() == "later user edit\n"
+        (root / "conflict-ack").touch()
         await wait_for("finished")
         stdout, _ = await asyncio.wait_for(swift.communicate(), 10)
         print(stdout.decode().replace(token, "[REDACTED]"))
         if swift.returncode:
             raise RuntimeError("Swift integration tests failed")
-        assert len((root / "executed.jsonl").read_text().splitlines()) == 1
+        assert len((root / "executed.jsonl").read_text().splitlines()) == 3
         assert not (root / "redirect-followed").exists()
         print(
             "PASS: native approval, real execution, response redaction, "
-            "hard/user denial, replay and lease loss"
+            "hard/user denial, replay, lease loss, native file restore and later-edit conflict"
         )
     finally:
         for process in [swift, proxy]:

@@ -31,6 +31,11 @@ def main() -> None:
 @click.option("--dashboard", is_flag=True, help="Enable real-time dashboard")
 @click.option("--dashboard-approvals", is_flag=True, help="Enable authenticated local approvals")
 @click.option(
+    "--snapshot-workspace",
+    type=click.Path(exists=True, file_okay=False, path_type=Path),
+    help="Opt-in workspace snapshots; requires --dashboard-approvals (POSIX)",
+)
+@click.option(
     "--approval-timeout",
     default=60,
     type=click.IntRange(1, 300),
@@ -51,11 +56,23 @@ def wrap(
     dashboard_port: int,
     dashboard_approvals: bool,
     approval_timeout: int,
+    snapshot_workspace: Path | None,
 ) -> None:
     """Wrap an MCP server with mcp-firewall protection.
 
     Usage: mcp-firewall wrap -- npx @modelcontextprotocol/server-filesystem /tmp
     """
+    from .dashboard.workspace import configure_workspace
+    from .workspace import WorkspaceSnapshots
+
+    snapshots = None
+    if snapshot_workspace is not None:
+        if not dashboard_approvals:
+            raise click.ClickException("--snapshot-workspace requires --dashboard-approvals")
+        try:
+            snapshots = WorkspaceSnapshots(snapshot_workspace)
+        except (OSError, ValueError):
+            raise click.ClickException("Cannot open the configured snapshot workspace") from None
     broker = None
     token = None
     if dashboard_approvals:
@@ -102,6 +119,7 @@ def wrap(
                 port=dashboard_port,
                 approval_broker=broker,
                 token=token,
+                workspace_snapshots=snapshots,
             )
         else:
             start_dashboard(host=dashboard_host, port=dashboard_port)
@@ -117,6 +135,9 @@ def wrap(
         else StdioProxy(config, console)
     )
 
+    if snapshots is not None:
+        proxy.snapshots = snapshots
+
     try:
         exit_code = asyncio.run(proxy.run(list(server_args)))
         sys.exit(exit_code)
@@ -125,6 +146,7 @@ def wrap(
     finally:
         if broker is not None:
             broker.close()
+        configure_workspace(None)
 
 
 @main.command()

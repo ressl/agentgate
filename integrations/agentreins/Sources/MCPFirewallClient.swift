@@ -96,6 +96,56 @@ actor MCPFirewallClient {
               acknowledgment.accepted else { throw MCPFirewallError.invalidData }
     }
 
+    func workspace() async throws -> MCPFirewallWorkspace {
+        let data = try await request("api/workspace")
+        guard let workspace = try? JSONDecoder().decode(MCPFirewallWorkspace.self, from: data) else {
+            throw MCPFirewallError.invalidData
+        }
+        try workspace.validate()
+        return workspace
+    }
+
+    func snapshot(_ id: UUID) async throws -> MCPFirewallSnapshot {
+        let data = try await request("api/workspace/" + id.uuidString.lowercased())
+        guard let snapshot = try? JSONDecoder().decode(MCPFirewallSnapshot.self, from: data),
+              snapshot.id == id else { throw MCPFirewallError.invalidData }
+        try snapshot.validate(detail: true)
+        return snapshot
+    }
+
+    func preview(_ snapshot: MCPFirewallSnapshot, file: MCPFirewallFileChange) async throws -> MCPFirewallFilePreview {
+        let data = try await request("api/workspace/" + snapshot.id.uuidString.lowercased()
+                                    + "/files/" + file.id.uuidString.lowercased())
+        guard let preview = try? JSONDecoder().decode(MCPFirewallFilePreview.self, from: data) else {
+            throw MCPFirewallError.invalidData
+        }
+        try preview.validate(snapshot: snapshot, file: file)
+        return preview
+    }
+
+    func restore(_ preview: MCPFirewallFilePreview) async throws -> MCPFirewallSnapshot {
+        let body = try JSONSerialization.data(withJSONObject: ["revision": preview.revision.uuidString.lowercased()])
+        let data = try await request("api/workspace/" + preview.snapshot_id.uuidString.lowercased()
+                                    + "/files/" + preview.file_id.uuidString.lowercased() + "/restore", body: body)
+        guard let snapshot = try? JSONDecoder().decode(MCPFirewallSnapshot.self, from: data),
+              snapshot.id == preview.snapshot_id,
+              snapshot.revision != preview.revision,
+              snapshot.files.contains(where: { $0.id == preview.file_id && $0.restored }) else {
+            throw MCPFirewallError.invalidData
+        }
+        try snapshot.validate(detail: true)
+        return snapshot
+    }
+
+    func discard(_ snapshot: MCPFirewallSnapshot) async throws {
+        let body = try JSONSerialization.data(withJSONObject: ["revision": snapshot.revision.uuidString.lowercased()])
+        let data = try await request("api/workspace/" + snapshot.id.uuidString.lowercased() + "/discard", body: body)
+        struct Acknowledgment: Decodable { let discarded: Bool }
+        guard let result = try? JSONDecoder().decode(Acknowledgment.self, from: data), result.discarded else {
+            throw MCPFirewallError.invalidData
+        }
+    }
+
     func disconnect() async {
         _ = try? await request("api/approvals/disconnect", body: Data("{}".utf8))
         token = ""

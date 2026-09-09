@@ -86,3 +86,18 @@ Clearly distinguish this demo UI test from exercising all upstream monitoring UI
 Design reviewed inline for scope, consistency and testability. The user's existing
 approval covers this milestone. The writing-plans skill is not installed in the
 shared or Codex skill roots; the ordered plan above is the local fallback.
+
+## Outcome
+
+Implemented the scoped snapshot engine, protected API, stdio admission/correlation,
+native review/restore/discard and isolated demo. Native clicks verified approval,
+denial, disconnect, diff, confirmed restore, later-edit conflict and discard on
+synthetic files. Snapshot labels gained timestamps and call-ID prefixes.
+Regression checks also caught and fixed missing-newline diff rendering and a
+missing audit denial when snapshot admission blocks an earlier policy allow.
+The final denial uses the existing policy stage and leaves event schema v1 intact.
+
+Validation: 475 Python tests on 3.11/3.14, 9 adapter tests including live Swift/proxy
+recovery, 18 existing upstream tests, Ruff and strict mypy. The exact retained
+limits and filesystem race/metadata boundaries are documented in
+`docs/workspace-rollback.md`. No upstream release or multi-file transaction.

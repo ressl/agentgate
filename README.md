@@ -235,6 +235,14 @@ mcp-firewall scan -- python my_server.py
 mcp-firewall wrap -- python my_server.py
 ```
 
+## Scoped workspace recovery
+
+Opt in to before/after file snapshots with `wrap --dashboard-approvals
+--snapshot-workspace /absolute/project`. The native adapter can display diffs and
+restore a selected file while rejecting stale edits. Snapshots are bounded and
+last for the proxy process lifetime; pause external writers before restore.
+See [workspace rollback](docs/workspace-rollback.md) for setup and limits.
+
 ## Documentation
 
 - [Getting Started](docs/getting-started.md)
@@ -242,6 +250,7 @@ mcp-firewall wrap -- python my_server.py
 - [Compliance Guide](docs/compliance.md)
 - [Threat Feed](docs/threat-feed.md)
 - [Architecture](ARCHITECTURE.md)
+- [Workspace snapshots and rollback](docs/workspace-rollback.md)
 
 ## Contributing
 
