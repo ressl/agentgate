@@ -194,3 +194,37 @@ print(gateway.delivery_stats)
 
 `event_handler` works independently of the `events.enabled` HTTP export switch.
 See [SDK migration](sdk-migration.md) for asynchronous and structured usage.
+
+## Native AgentReins integration
+
+The [Swift adapter and reproducible demo](../integrations/agentreins/README.md)
+connect to the existing authenticated dashboard on loopback. In approval mode,
+`GET /api/integration-events?after=0&limit=256` returns:
+
+```json
+{
+  "stream_id": "74210aba-21c1-4f23-a353-4d3dba3960eb",
+  "cursor": 0,
+  "oldest_cursor": 1,
+  "gap": false,
+  "has_more": false,
+  "events": []
+}
+```
+
+The feed requires the same Bearer token and local origin/host checks as approvals;
+responses have `Cache-Control: no-store`. It is disabled without dashboard approval
+mode. Every event uses the existing `SecurityEvent` v1 schema. The feed cursor counts
+observations across sessions and is distinct from each event's session sequence.
+
+For subsequent pages send `after=<cursor>&stream_id=<stream_id>`. The ring retains
+1000 events. `gap: true` means the requested cursor predates retained evidence;
+display that loss instead of assuming a complete history. `has_more` signals another
+page. A stream reset changes its UUID and returns 409 for a previous stream ID;
+a cursor beyond the newest event returns 400. Reconnecting cannot recover lost
+history. Event reads alone do not activate or renew the approval controller lease.
+
+Stdio observers populate the feed automatically. SDK hosts opt in with
+`event_handler=record_integration_event` from `mcp_firewall.dashboard.event_feed`
+when constructing `Gateway`, together with `start_dashboard(approval_broker=..., token=...)`.
+SDK handlers retain the bounded, best-effort delivery semantics described above.

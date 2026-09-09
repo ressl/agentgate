@@ -69,6 +69,10 @@ dev = [
 [project.scripts]
 mcp-firewall = "mcp_firewall.cli:main"
 
+[tool.setuptools.packages.find]
+include = ["mcp_firewall", "mcp_firewall.*"]
+namespaces = false
+
 [project.urls]
 Homepage = "https://github.com/ressl/mcp-firewall"
 Documentation = "https://github.com/ressl/mcp-firewall/tree/main/docs"
